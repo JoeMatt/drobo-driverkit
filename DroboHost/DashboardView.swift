@@ -30,6 +30,8 @@ struct ContentView: View {
         return Tab(rawValue: name.capitalized) ?? .summary
     }()
     @AppStorage(DashboardModel.extendedKey) private var readDriveDetails = false
+    @AppStorage(DashboardModel.extendedOverrideKey) private var readDriveDetailsNow = false
+    @State private var confirmDetailsNow = false
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
@@ -568,7 +570,7 @@ struct ContentView: View {
         let fragile = DashboardModel.isFragile(snapshot)
         let status = snapshot.extendedFailed
             ? "This Drobo did not answer the request, so the driver stopped asking. It stays off until the driver restarts."
-            : fragile && readDriveDetails
+            : fragile && readDriveDetails && !readDriveDetailsNow
             ? "Waiting: nothing new is asked of the Drobo while it is rebuilding or has no redundancy. It turns on by itself afterwards."
             : snapshot.extendedEnabled ? "On. Temperature, error count, firmware and serial number are on the Drives tab."
             : readDriveDetails ? "Asked for; waiting for the driver. This needs driver 0.25.0 or later (press Activate after updating)."
@@ -584,12 +586,28 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                if fragile, readDriveDetails, !readDriveDetailsNow, !snapshot.extendedFailed {
+                    Button("Turn On Now…") { confirmDetailsNow = true }
+                        .buttonStyle(PillButtonStyle(compact: true))
+                }
                 Toggle("Read drive details", isOn: $readDriveDetails)
                     .toggleStyle(.switch).labelsHidden().tint(Theme.emerald)
-                    .onChange(of: readDriveDetails) { _, _ in dashboard.extendedSettingChanged() }
+                    .onChange(of: readDriveDetails) { _, on in
+                        if !on { readDriveDetailsNow = false }
+                        dashboard.extendedSettingChanged()
+                    }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+        .confirmationDialog("Ask the Drobo for drive details while it is rebuilding?", isPresented: $confirmDetailsNow) {
+            Button("Turn On Now") {
+                readDriveDetailsNow = true
+                dashboard.extendedSettingChanged()
+            }
+            Button("Wait for the Rebuild", role: .cancel) {}
+        } message: {
+            Text("This is a read-only status request that Drobo's own software also sends, but this driver has never sent it to a Drobo, and yours has no redundancy right now. If the Drobo refuses or ignores it the driver stops asking. An earlier untested command (Blink) made this unit restart.")
+        }
     }
 
     private var diagnosticsCard: some View {

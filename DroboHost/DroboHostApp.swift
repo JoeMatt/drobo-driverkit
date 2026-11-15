@@ -246,6 +246,8 @@ final class DashboardModel: ObservableObject {
 
     /// The app setting behind "Read drive details". The driver forgets it when it restarts.
     static let extendedKey = "readDriveDetails"
+    /// Set when the owner chose not to wait for the rebuild to finish.
+    static let extendedOverrideKey = "readDriveDetailsWhileFragile"
 
     /// True while the Drobo is rebuilding or has no redundancy: nothing new is asked of it then.
     static func isFragile(_ snapshot: DroboSnapshot) -> Bool {
@@ -257,7 +259,9 @@ final class DashboardModel: ObservableObject {
     /// so an older driver that refuses the command is not asked repeatedly.
     private func syncExtended(_ latest: DroboSnapshot) {
         guard latest.ready, latest.statusFlags != nil else { extendedAttempted = false; return }
-        let wanted = UserDefaults.standard.bool(forKey: Self.extendedKey) && !Self.isFragile(latest)
+        let defaults = UserDefaults.standard
+        let wanted = defaults.bool(forKey: Self.extendedKey)
+            && (!Self.isFragile(latest) || defaults.bool(forKey: Self.extendedOverrideKey))
         if latest.extendedEnabled, !wanted {
             _ = DroboMonitor.send(.setExtended, argument: 0)
         } else if wanted, !latest.extendedEnabled, !latest.extendedFailed, !extendedAttempted {
