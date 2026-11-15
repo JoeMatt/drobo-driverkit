@@ -88,5 +88,6 @@ All of these cost a driver version; details in protocol notes 11.3 and 11.6.
 
 ## Where to start
 
-Open issues are the backlog; ones labelled `good first issue` need no hardware. Anything
-labelled `needs hardware` will be tested by the maintainer after review.
+The backlog is [docs/04-backlog.md](docs/04-backlog.md) (and GitHub issues once they are
+filed from it). Items marked `good first issue` need no hardware. Anything marked
+`needs hardware` will be tested by the maintainer after review.
