@@ -29,6 +29,10 @@ That unsigned build is the CI check and the only thing you can run without the h
 are no unit tests yet (adding host-side tests for the page decoders in `DroboMonitor.swift` is
 a good first PR).
 
+To look at the dashboard without a Drobo, run the built app with made-up data:
+`build/Build/Products/Debug/DroboDriverKit.app/Contents/MacOS/DroboDriverKit -demo healthy`
+(or `-demo rebuilding`). The UI's design primitives are in `DroboHost/Design.swift`.
+
 ## You almost certainly do not have the hardware
 
 Nothing here can be tested end to end without a Drobo 8D, a development-signed build and the

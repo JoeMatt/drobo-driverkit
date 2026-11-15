@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drobo-driverkit · A macOS driver for the Drobo 8D on Apple silicon</title>
+<meta name="description" content="A DriverKit driver extension and dashboard for the Drobo 8D Thunderbolt array on Apple silicon Macs. No kext, no Reduced Security.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #050506;
+    --text: rgba(255,255,255,.94);
+    --muted: rgba(255,255,255,.58);
+    --faint: rgba(255,255,255,.36);
+    --hair: rgba(255,255,255,.08);
+    --emerald: #45e6a1;
+    --amber: #ffb84d;
+    --coral: #ff6b66;
+    --ice: #85bdff;
+    --spring: cubic-bezier(.32,.72,0,1);
+    --sans: "Geist", "SF Pro Display", ui-sans-serif, system-ui, sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--ink); color: var(--text); font-family: var(--sans);
+    font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+  img { display: block; max-width: 100%; height: auto; }
+
+  /* Fixed atmosphere: two colour fields and film grain, never repainted on scroll. */
+  .atmosphere { position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(60rem 40rem at 8% -10%, rgba(69,230,161,.15), transparent 60%),
+      radial-gradient(55rem 45rem at 100% 110%, rgba(133,189,255,.13), transparent 60%); }
+  .atmosphere::after { content: ""; position: absolute; inset: 0; opacity: .045;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  main, footer { position: relative; z-index: 1; }
+  .wrap { width: min(1180px, 100% - 3rem); margin-inline: auto; }
+  section { padding-block: clamp(6rem, 12vw, 10rem); }
+
+  /* Type */
+  .eyebrow { display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem; border-radius: 999px;
+    font-size: 10px; font-weight: 500; letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+    background: rgba(255,255,255,.05); box-shadow: inset 0 0 0 1px var(--hair); }
+  .eyebrow i { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 10px var(--emerald); }
+  h1, h2, h3 { font-weight: 500; letter-spacing: -.035em; line-height: 1.02; text-wrap: balance; }
+  h1 { font-size: clamp(2.9rem, 7.2vw, 5.6rem); margin-top: 1.6rem; }
+  h2 { font-size: clamp(2.2rem, 4.6vw, 3.6rem); margin-top: 1.3rem; }
+  h3 { font-size: 1.3rem; letter-spacing: -.02em; line-height: 1.2; }
+  .lede { font-size: clamp(1.05rem, 1.5vw, 1.25rem); color: var(--muted); max-width: 34rem; margin-top: 1.6rem; font-weight: 300; }
+  .dim { color: var(--faint); }
+  code, .mono { font-family: var(--mono); font-size: .85em; }
+
+  /* Buttons: pill, with the icon in its own well flush to the trailing edge. */
+  .btn { display: inline-flex; align-items: center; gap: .9rem; padding: .45rem .45rem .45rem 1.4rem; border-radius: 999px;
+    font-size: .95rem; font-weight: 500; transition: transform .6s var(--spring), background-color .6s var(--spring); }
+  .btn span.well { display: grid; place-items: center; width: 2.2rem; height: 2.2rem; border-radius: 50%;
+    transition: transform .6s var(--spring); }
+  .btn svg { width: 14px; height: 14px; }
+  .btn:hover .well { transform: translate(3px,-1px) scale(1.06); }
+  .btn:active { transform: scale(.98); }
+  .btn.solid { background: #fff; color: #000; }
+  .btn.solid .well { background: rgba(0,0,0,.09); }
+  .btn.ghost { background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+  .btn.ghost:hover { background: rgba(255,255,255,.1); }
+  .btn.ghost .well { background: rgba(255,255,255,.1); }
+
+  /* Floating island nav */
+  .nav { position: fixed; top: 1.25rem; left: 50%; transform: translateX(-50%); z-index: 40;
+    display: flex; align-items: center; gap: 1.6rem; padding: .45rem .45rem .45rem 1.2rem; border-radius: 999px;
+    background: rgba(12,12,14,.6); backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.09), inset 0 1px 0 rgba(255,255,255,.1); white-space: nowrap; }
+  .nav .brand { font-family: var(--mono); font-size: .8rem; letter-spacing: -.01em; }
+  .nav .links { display: flex; gap: 1.4rem; font-size: .85rem; color: var(--muted); }
+  .nav .links a { transition: color .5s var(--spring); }
+  .nav .links a:hover { color: var(--text); }
+  .nav .cta { padding: .5rem 1rem; border-radius: 999px; background: #fff; color: #000; font-size: .82rem; font-weight: 500;
+    transition: transform .6s var(--spring); }
+  .nav .cta:active { transform: scale(.97); }
+  .burger { display: none; position: relative; width: 2.3rem; height: 2.3rem; border: 0; border-radius: 50%;
+    background: rgba(255,255,255,.08); cursor: pointer; }
+  .burger::before, .burger::after { content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 1.25px; background: #fff;
+    transition: transform .6s var(--spring); }
+  .burger::before { transform: translate(-50%, -3.5px); }
+  .burger::after { transform: translate(-50%, 3.5px); }
+  .open .burger::before { transform: translate(-50%, 0) rotate(45deg); }
+  .open .burger::after { transform: translate(-50%, 0) rotate(-45deg); }
+  .overlay { position: fixed; inset: 0; z-index: 30; display: grid; align-content: center; gap: .4rem; padding: 2rem;
+    background: rgba(5,5,6,.82); backdrop-filter: blur(40px); -webkit-backdrop-filter: blur(40px);
+    opacity: 0; pointer-events: none; transition: opacity .6s var(--spring); }
+  .open .overlay { opacity: 1; pointer-events: auto; }
+  .overlay a { font-size: 2.4rem; font-weight: 500; letter-spacing: -.03em; opacity: 0; transform: translateY(3rem);
+    transition: transform .8s var(--spring), opacity .8s var(--spring); }
+  .open .overlay a { opacity: 1; transform: none; }
+  .open .overlay a:nth-child(1) { transition-delay: .08s; }
+  .open .overlay a:nth-child(2) { transition-delay: .14s; }
+  .open .overlay a:nth-child(3) { transition-delay: .20s; }
+  .open .overlay a:nth-child(4) { transition-delay: .26s; }
+
+  /* Double bezel: a glass plate (core) seated in a tray (shell), concentric corners. */
+  .shell { --r: 2rem; --pad: .4rem; padding: var(--pad); border-radius: var(--r);
+    background: rgba(255,255,255,.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+  .core { height: 100%; border-radius: calc(var(--r) - var(--pad)); padding: clamp(1.4rem, 2.4vw, 2rem);
+    background: rgba(255,255,255,.035);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.04); }
+  .core.flush { padding: 0; overflow: hidden; background: #0a0b0d; }
+
+  /* Hero */
+  .hero { min-height: 100dvh; display: grid; align-items: center; padding-top: 9rem; padding-bottom: 5rem; }
+  .hero .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: clamp(2rem, 5vw, 5rem); align-items: center; }
+  .hero .actions { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 2.4rem; }
+  .hero .fine { margin-top: 2.2rem; font-size: .8rem; color: var(--faint); max-width: 30rem; }
+  .cascade { position: relative; aspect-ratio: 1 / 1.02; }
+  .cascade .shell { position: absolute; width: 78%; --r: 1.5rem; --pad: .3rem;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07), 0 40px 120px -30px rgba(69,230,161,.18);
+    transition: transform 1s var(--spring); }
+  .cascade .back { right: 0; top: 0; transform: rotate(3deg); opacity: .8; }
+  .cascade .front { left: 0; bottom: 0; transform: rotate(-2deg); }
+  .cascade:hover .back { transform: rotate(4.5deg) translate(1.2%, -1.2%); }
+  .cascade:hover .front { transform: rotate(-1deg) translate(-1%, 1%); }
+
+  /* Status bento */
+  .head { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 2rem; align-items: end; margin-bottom: 3.5rem; }
+  .head p { color: var(--muted); font-weight: 300; }
+  .bento { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; }
+  .bento > * { grid-column: span 4; }
+  .bento .wide { grid-column: span 8; }
+  .bento .half { grid-column: span 6; }
+  .state { display: inline-flex; align-items: center; gap: .5rem; font-family: var(--mono); font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
+  .state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+  .ok { color: var(--emerald); } .warn { color: var(--amber); } .no { color: var(--coral); } .info { color: var(--ice); }
+  .core h3 { margin-top: 1.4rem; }
+  .core p { margin-top: .7rem; color: var(--muted); font-size: .95rem; font-weight: 300; }
+  .core p.pull { font-size: clamp(1.5rem, 2.6vw, 2.2rem); line-height: 1.2; letter-spacing: -.03em; font-weight: 400; color: var(--text) !important; margin-top: 1.4rem !important; }
+
+  /* Requirements */
+  .split { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: clamp(2rem, 6vw, 6rem); align-items: start; }
+  .split .sticky { position: sticky; top: 7rem; }
+  .list { list-style: none; padding: 0; }
+  .list li { display: grid; grid-template-columns: 3rem 1fr; gap: 1rem; padding: 1.4rem 0; box-shadow: inset 0 -1px 0 var(--hair); }
+  .list li:last-child { box-shadow: none; }
+  .list .n { font-family: var(--mono); font-size: .75rem; color: var(--faint); padding-top: .3rem; }
+  .list strong { font-weight: 500; }
+  .list span { display: block; color: var(--muted); font-size: .93rem; font-weight: 300; margin-top: .2rem; }
+
+  /* Contribute */
+  .tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: 1.2rem; }
+  .tag { font-family: var(--mono); font-size: .68rem; padding: .2rem .6rem; border-radius: 999px; color: var(--muted); box-shadow: inset 0 0 0 1px var(--hair); }
+  .doc { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 0; box-shadow: inset 0 -1px 0 var(--hair);
+    transition: transform .6s var(--spring); }
+  .doc:last-child { box-shadow: none; }
+  .doc:hover { transform: translateX(6px); }
+  .doc b { font-weight: 500; display: block; }
+  .doc small { color: var(--muted); font-size: .85rem; font-weight: 300; }
+  .doc svg { width: 16px; height: 16px; flex: none; color: var(--faint); }
+
+  footer { padding: 3rem 0 4rem; color: var(--faint); font-size: .82rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; padding-top: 2rem; box-shadow: inset 0 1px 0 var(--hair); }
+  footer a { color: var(--muted); transition: color .5s var(--spring); }
+  footer a:hover { color: var(--text); }
+
+  /* Scroll entry */
+  .reveal { opacity: 0; transform: translateY(3.5rem); filter: blur(10px);
+    transition: opacity 1s var(--spring), transform 1s var(--spring), filter 1s var(--spring); transition-delay: var(--d, 0s); }
+  .reveal.in { opacity: 1; transform: none; filter: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; filter: none; transition: none; }
+    html { scroll-behavior: auto; }
+  }
+
+  @media (max-width: 767px) {
+    .wrap { width: calc(100% - 2rem); }
+    section { padding-block: 5rem; }
+    .nav { gap: .8rem; }
+    .nav .links, .nav .cta { display: none; }
+    .burger { display: block; }
+    .hero { padding-top: 7rem; }
+    .hero .grid, .head, .split { grid-template-columns: 1fr; }
+    .cascade { aspect-ratio: auto; display: grid; gap: 1rem; }
+    .cascade .shell { position: static; width: 100%; transform: none !important; opacity: 1; }
+    .bento > *, .bento .wide, .bento .half { grid-column: span 12; }
+    .split .sticky { position: static; }
+  }
+</style>
+<noscript><style>.reveal { opacity: 1; transform: none; filter: none; }</style></noscript>
+</head>
+<body>
+<div class="atmosphere"></div>
+
+<header id="top">
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="#top">drobo-driverkit</a>
+    <div class="links">
+      <a href="#status">Status</a>
+      <a href="#install">Install</a>
+      <a href="#contribute">Contribute</a>
+    </div>
+    <a class="cta" href="https://github.com/JoeMatt/drobo-driverkit">GitHub</a>
+    <button class="burger" aria-label="Menu" aria-expanded="false"></button>
+  </nav>
+  <div class="overlay">
+    <a href="#status">Status</a>
+    <a href="#install">Install</a>
+    <a href="#contribute">Contribute</a>
+    <a href="https://github.com/JoeMatt/drobo-driverkit">GitHub</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap grid">
+      <div>
+        <span class="eyebrow reveal"><i></i>Drobo 8D · Apple silicon · DriverKit</span>
+        <h1 class="reveal" style="--d:.08s">Your Drobo 8D, on a current Mac.</h1>
+        <p class="lede reveal" style="--d:.16s">Drobo, Inc. is gone, and its Thunderbolt driver is a kernel extension that modern Macs only load with security turned down. This replaces it with a DriverKit driver extension and a dashboard. No kext, no Reduced Security, and System Integrity Protection stays on.</p>
+        <div class="actions reveal" style="--d:.24s">
+          <a class="btn solid" href="https://github.com/JoeMatt/drobo-driverkit">View the source
+            <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></span></a>
+          <a class="btn ghost" href="https://github.com/JoeMatt/drobo-driverkit#install-step-by-step">Install guide
+            <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></span></a>
+        </div>
+        <p class="fine reveal" style="--d:.32s">Open source under the MIT license. Not affiliated with Drobo, Inc. Screenshots show the app's built-in demo data.</p>
+      </div>
+      <div class="cascade reveal" style="--d:.2s">
+        <div class="shell back"><div class="core flush"><img src="images/dashboard-rebuilding.png" alt="The dashboard while the Drobo is rebuilding, with one bay marked Rebuilding and a no-redundancy warning" width="940" height="954" loading="lazy"></div></div>
+        <div class="shell front"><div class="core flush"><img src="images/dashboard.png" alt="The dashboard showing capacity, protection, eight drive bays, volumes and tools" width="940" height="895"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="status">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <span class="eyebrow reveal">Status</span>
+          <h2 class="reveal" style="--d:.08s">What works today, and what has not been checked.</h2>
+        </div>
+        <p class="reveal" style="--d:.16s">The driver talks to hardware that holds someone's data, so every feature is listed with how far it has been verified on a real unit. The full audit is in the coverage document.</p>
+      </div>
+      <div class="bento">
+        <div class="shell wide reveal"><div class="core">
+          <span class="state ok"><i></i>Works</span>
+          <p class="pull">Today this is a way to get your data off a Drobo 8D using a current Mac, and to see what state the unit is in while you do.</p>
+          <p>HFS+ volumes mount read-only over Thunderbolt 3.</p>
+        </div></div>
+        <div class="shell reveal" style="--d:.08s"><div class="core">
+          <span class="state ok"><i></i>Works</span>
+          <h3>Health at a glance</h3>
+          <p>Capacity, drive bays, rebuild progress and alerts, in the included app and its menu bar item.</p>
+        </div></div>
+        <div class="shell reveal"><div class="core">
+          <span class="state warn"><i></i>Experimental</span>
+          <h3>Writing</h3>
+          <p>Off by default. You enable it per volume in the app. It is implemented but not yet verified on hardware, so keep a copy of anything on a volume you make writable.</p>
+        </div></div>
+        <div class="shell reveal" style="--d:.08s"><div class="core">
+          <span class="state warn"><i></i>Unverified</span>
+          <h3>Management tools</h3>
+          <p>Blink lights, rename, safe shutdown, dual disk redundancy and spin-down settings are in the app. They have not yet been verified on hardware.</p>
+        </div></div>
+        <div class="shell reveal" style="--d:.16s"><div class="core">
+          <span class="state no"><i></i>Not supported</span>
+          <h3>Out of scope</h3>
+          <p>Creating or deleting Drobo volumes, firmware updates and reset. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap split">
+      <div class="sticky">
+        <span class="eyebrow reveal">Install</span>
+        <h2 class="reveal" style="--d:.08s">There is no download yet. You build it once.</h2>
+        <p class="lede reveal" style="--d:.16s">Apple controls which developers may ship hardware drivers. Anyone with a paid developer account can run this on their own Macs. One build that works on everyone's Mac needs Apple to grant distribution entitlements for this hardware, and that request is pending.</p>
+        <div class="actions reveal" style="--d:.24s; margin-top:2rem; display:flex">
+          <a class="btn ghost" href="https://github.com/JoeMatt/drobo-driverkit#install-step-by-step">Step-by-step guide
+            <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></span></a>
+        </div>
+      </div>
+      <div class="shell reveal"><div class="core">
+        <span class="state info"><i></i>About 30 minutes, once a year</span>
+        <ul class="list" style="margin-top:1rem">
+          <li><span class="n">01</span><div><strong>An Apple silicon Mac</strong><span>M1 or later, running macOS 14 or later.</span></div></li>
+          <li><span class="n">02</span><div><strong>A Drobo 8D and a real Thunderbolt 3 cable</strong><span>The one with the lightning-bolt logo. A plain USB-C cable looks the same and will not work.</span></div></li>
+          <li><span class="n">03</span><div><strong>A paid Apple Developer Program membership</strong><span>US $99 a year. Apple does not allow driver capabilities on free accounts.</span></div></li>
+          <li><span class="n">04</span><div><strong>Xcode and Homebrew</strong><span>Both free. You copy a few commands into Terminal; you do not need to know how to program.</span></div></li>
+        </ul>
+      </div></div>
+    </div>
+  </section>
+
+  <section id="contribute">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <span class="eyebrow reveal">Contribute</span>
+          <h2 class="reveal" style="--d:.08s">Set up for contributors who do not have the hardware.</h2>
+        </div>
+        <p class="reveal" style="--d:.16s">Almost nobody has a Drobo 8D on their desk. The repository says what each change must prove, and which backlog items need a maintainer to run them on a real unit.</p>
+      </div>
+      <div class="bento">
+        <div class="shell half reveal"><div class="core">
+          <span class="state info"><i></i>Start here</span>
+          <div style="margin-top:1rem">
+            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/AGENTS.md"><div><b>AGENTS.md</b><small>Layout, build, safety rules and the DriverKit pitfalls already paid for.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
+            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/01-protocol-reverse-engineering.md"><div><b>Protocol notes</b><small>The wire protocol, from static analysis and from what was observed on hardware.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
+            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/03-coverage.md"><div><b>Coverage audit</b><small>Every capability of the original driver, mapped to this code with a status.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
+            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/04-backlog.md"><div><b>Backlog</b><small>Ten work items, each sized for one pull request.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
+          </div>
+        </div></div>
+        <div class="shell half reveal" style="--d:.08s"><div class="core">
+          <span class="state ok"><i></i>No hardware needed</span>
+          <h3>Unit tests for the management page decoders</h3>
+          <p>The app's decoders have no tests. Add a test target with fixture bytes per page and run it in CI.</p>
+          <div class="tags"><span class="tag">app</span><span class="tag">good first issue</span></div>
+          <h3 style="margin-top:2.2rem">Reverse-engineer Drobo Dashboard 3.6.1</h3>
+          <p>It has not been analysed. Documenting the commands it sends decides coverage of restart, LED brightness and SSD cache management.</p>
+          <div class="tags"><span class="tag">protocol</span><span class="tag">documentation only</span></div>
+        </div></div>
+        <div class="shell wide reveal"><div class="core">
+          <span class="state warn"><i></i>The rules that do not bend</span>
+          <h3>Writes stay off by default.</h3>
+          <p>They are opt-in per volume and that default does not change. Destructive management commands are out of scope. A pull request that only compiles says so: "compiles; not run on hardware".</p>
+        </div></div>
+        <div class="shell reveal" style="--d:.08s"><div class="core">
+          <span class="state info"><i></i>Build check</span>
+          <h3>One unsigned build</h3>
+          <p class="mono" style="font-size:.78rem; line-height:1.7; word-break:break-word">brew install xcodegen<br>xcodegen generate<br>xcodebuild -scheme DroboHost CODE_SIGNING_ALLOWED=NO build</p>
+        </div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 <a href="https://github.com/JoeMatt">Joseph Mattiello</a>. MIT licensed. Not affiliated with Drobo, Inc.</span>
+    <span><a href="https://github.com/JoeMatt/drobo-driverkit">github.com/JoeMatt/drobo-driverkit</a></span>
+  </div>
+</footer>
+
+<script>
+  const header = document.querySelector('header');
+  const burger = document.querySelector('.burger');
+  const setOpen = open => { header.classList.toggle('open', open); burger.setAttribute('aria-expanded', open); };
+  burger.addEventListener('click', () => setOpen(!header.classList.contains('open')));
+  document.querySelectorAll('.overlay a').forEach(a => a.addEventListener('click', () => setOpen(false)));
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => { if (entry.isIntersecting) { entry.target.classList.add('in'); observer.unobserve(entry.target); } });
+  }, { threshold: 0.12, rootMargin: '0px 0px -6% 0px' });
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
