@@ -625,6 +625,29 @@ Pages verified on the 8D (firmware 4.2.3):
 | `0x08` | Firmware | 6 numeric bytes, build date[32], platform[16] (`"ArmMarvell"`), version[16] (`"4.2.3"`). The readable version is the third string, not the leading bytes |
 | `0x09` | Status: flags u32, relayout count u32 | Flag bits as drobo-utils (`0x0200` relayout in progress, `0x0040` no redundancy, …). Bits `0x8000` and `0x10000` were also set and are not documented there |
 
+### 11.6 Options pages, write path and app commands (driver v0.19–v0.21, 2026-11-15)
+
+- **Options pages work on the 8D.** Sub-page `0x30` returned `55 5F …` (yellow threshold 85 %,
+  red 95 %). Sub-page `0x31` returned flags `0x07` (dual disk redundancy, spin-down enabled,
+  manual volume management) and a spin-down delay of 14 minutes, matching drobo-utils' layout.
+- **Slot info with 9 slots** returns the mSATA cache drive as the ninth record.
+- **Write path** (implemented, not yet exercised): same block request as a read with operation
+  `0x00400031`. Each LUN stays write-protected (MODE SENSE WP bit) until enabled; the driver
+  destroys and re-creates its SCSI target so macOS re-reads the write-protect state.
+  SYNCHRONIZE CACHE is still answered by the driver rather than forwarded on the
+  system-control channel, whose request flags remain undecoded.
+- **App commands** go through an `IOUserClient` (`DroboUserClient`, selector 0). On the
+  passthrough channel, from drobo-utils and not yet verified on the 8D:
+  blink = `EA 10 00 06 00 <seq> 20 00 01 00` (1 byte data-in), standby = same with `0D`,
+  rename/set clock = MODE SELECT(10) `55 01 7A 05 00 00 00 00 2A 00` with a 42-byte page
+  (`7A 05 00 26`, UTC u32, offset u16, name[32]) sent data-out with flags `0x00420020 | 0x08`.
+- **The 8D's one-block LUN** (LUN 2 here) has no partition map and makes macOS show "The disk
+  you attached was not readable". The driver no longer publishes single-block units.
+- **Stop must not wait on the I/O queue.** A `DispatchSync` onto it from `Stop` could hang
+  termination; the system then killed and relaunched the old dext and the upgrade stayed stuck
+  in "terminating for upgrade". `Stop` now quiesces asynchronously and a five-second watchdog
+  completes it if the cancel handlers have not all run.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

@@ -39,6 +39,13 @@
 			<!-- vendor 0x4452 ("DR"), device 0x3844 ("8D") -->
 			<key>IOPCIMatch</key>
 			<string>0x38444452</string>
+			<key>UserClientProperties</key>
+			<dict>
+				<key>IOClass</key>
+				<string>IOUserUserClient</string>
+				<key>IOUserClass</key>
+				<string>DroboUserClient</string>
+			</dict>
 			<key>IOPCITunnelCompatible</key>
 			<true/>
 			<key>IOPCIPauseCompatible</key>

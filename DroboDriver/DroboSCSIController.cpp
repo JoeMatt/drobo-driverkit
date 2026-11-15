@@ -30,6 +30,8 @@
 #include <PCIDriverKit/PCIDriverKit.h>
 
 #include "DroboProtocol.h"
+#include <DriverKit/IOUserClient.h>
+
 #include "DroboSCSIController.h"
 
 #define DLog(fmt, ...) do { os_log(OS_LOG_DEFAULT, "Drobo: " fmt, ##__VA_ARGS__); IOLog("Drobo: " fmt "\n", ##__VA_ARGS__); } while (0)
@@ -58,9 +60,9 @@ struct DroboLUN
 
 // Drobo management pages: MODE SENSE(10), page 0x3A, one sub-page each. The formats are those
 // documented by the open-source drobo-utils project; the host app decodes them.
-static const uint32_t kHealthPageCount = 7;
+static const uint32_t kHealthPageCount = 9;
 static const uint32_t kHealthPageMax   = 720;       // slot page: 4 + 1 + 9 x 72
-static const uint8_t  kHealthPages[kHealthPageCount] = { 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09 };
+static const uint8_t  kHealthPages[kHealthPageCount] = { 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x30, 0x31 };
 static const uint32_t kHealthSlot      = 32;        // request slot after the 32 block-I/O slots
 static const uint32_t kHealthDataOffset = 0x3000;   // data area (4 KiB) inside the request buffer
 
@@ -74,6 +76,7 @@ struct DroboSlot
     bool        submitted;
     uint32_t    transactionID;
     uint64_t    length;
+    bool        isWrite;
     uint64_t    submitTime;         // mach_absolute_time
     uint64_t    targetID;
     uint64_t    taskID;
@@ -180,6 +183,22 @@ struct DroboSCSIController_IVars
     uint32_t                   healthLastStatus;
     uint32_t                   healthLength[kHealthPageCount];
     uint8_t                    healthData[kHealthPageCount][kHealthPageMax];
+
+    // Writing. Off for every LUN until the app turns it on for specific ones.
+    uint32_t                   writableMask;        // bit n = LUN n accepts writes
+    uint64_t                   statWrites;
+    uint64_t                   statWriteBytes;
+
+    // One management command from the app, sent on the passthrough channel between health polls.
+    bool                       commandPending;
+    bool                       commandInflight;
+    uint8_t                    commandCDB[16];
+    bool                       commandDataOut;
+    uint32_t                   commandLength;
+    uint8_t                    commandData[64];
+    uint8_t                    commandSequence;
+    uint64_t                   statCommands;
+    uint32_t                   lastCommandSRB;
 
     uint32_t                   nextTransactionID;
     uint32_t                   nextTaskID;
@@ -459,6 +478,22 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     }
     DictSetNumber(status, "Inflight", iv->inflight);
     DictSetNumber(status, "Pending", iv->pendingCount);
+    DictSetNumber(status, "WritableMask", iv->writableMask);
+    DictSetNumber(status, "Writes", iv->statWrites);
+    DictSetNumber(status, "WriteBytes", iv->statWriteBytes);
+    DictSetNumber(status, "Commands", iv->statCommands);
+    DictSetNumber(status, "LastCommandSRB", iv->lastCommandSRB);
+    {
+        uint64_t blocks[32] = {};
+        for (uint32_t lun = 0; lun < 32; lun++) {
+            blocks[lun] = iv->luns[lun].present ? iv->luns[lun].blockCount : 0;
+        }
+        OSData * lunData = OSData::withBytes(blocks, sizeof(blocks));
+        if (lunData != nullptr) {
+            status->setObject("LUNBlocks", lunData);
+            lunData->release();
+        }
+    }
     DictSetNumber(status, "Reads", iv->statReads);
     DictSetNumber(status, "ReadBytes", iv->statReadBytes);
     DictSetNumber(status, "Errors", iv->statErrors);
@@ -698,8 +733,10 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
         const uint32_t present   = Port32(iv, entry + 0);
         const uint32_t blockSize = Port32(iv, entry + 4);
         const uint64_t blocks    = (uint64_t) Port32(iv, entry + 8) | ((uint64_t) Port32(iv, entry + 12) << 32);
-        // Only 512-byte LUNs are understood; anything else is not published.
-        iv->luns[lun].present    = (present != 0 && blockSize == 512 && blocks != 0);
+        // Only 512-byte LUNs are understood; anything else is not published. The 8D also
+        // presents a one-block LUN with no partition map, which only makes macOS show its
+        // "disk not readable" dialog, so single-block units are hidden too.
+        iv->luns[lun].present    = (present != 0 && blockSize == 512 && blocks > 1);
         iv->luns[lun].blockSize  = blockSize;
         iv->luns[lun].blockCount = blocks;
         if (present != 0) {
@@ -976,7 +1013,9 @@ IMPL(DroboSCSIController, Stop)
             IOSleep(100);
         }
         if (ivars->probeDone) {
-            ivars->probeQueue->DispatchSync(^{
+            // Asynchronous on purpose: if the I/O queue is stuck inside a kernel call during
+            // termination, waiting for it here would hang Stop and with it the whole upgrade.
+            ivars->probeQueue->DispatchAsync(^{
                 if (ivars->deviceInterruptsEnabled && ivars->pciOpen) {
                     RegWrite32(ivars, kDroboRegEndpointInterrupt, Reg32(ivars, kDroboRegEndpointInterrupt) & ~kDroboEndpointInterruptBits);
                     RegWrite32(ivars, kDroboRegOutgoingDoorbellMask, Reg32(ivars, kDroboRegOutgoingDoorbellMask) & ~kOutBitSummary);
@@ -1000,9 +1039,10 @@ IMPL(DroboSCSIController, Stop)
     // cancel them all and complete Stop from the last cancel handler. A queue whose block is
     // still inside a kernel call is skipped, because its cancel handler would never run.
     __block uint32_t remaining = 1;         // +1 held by this function until all are issued
+    __block int32_t completed = 0;          // super Stop must run exactly once
     provider->retain();
     void (^finished)(void) = ^{
-        if (__sync_sub_and_fetch(&remaining, 1) == 0) {
+        if (__sync_sub_and_fetch(&remaining, 1) == 0 && __sync_bool_compare_and_swap(&completed, 0, 1)) {
             Stop(provider, SUPERDISPATCH);
             provider->release();
         }
@@ -1015,6 +1055,135 @@ IMPL(DroboSCSIController, Stop)
     if (ivars->auxiliaryQueue != nullptr)                            { __sync_add_and_fetch(&remaining, 1); ivars->auxiliaryQueue->Cancel(finished); }
     if (ivars->interruptQueue != nullptr)                            { __sync_add_and_fetch(&remaining, 1); ivars->interruptQueue->Cancel(finished); }
     finished();
+
+    // Watchdog. v0.17/v0.18 sometimes never finished cancelling, the system gave up after a
+    // minute, relaunched the old driver and left the upgrade stuck. If the cancel handlers
+    // have not all run within five seconds, finish Stop anyway.
+    for (int i = 0; i < 50 && completed == 0; i++) {
+        IOSleep(100);
+    }
+    if (__sync_bool_compare_and_swap(&completed, 0, 1)) {
+        Stop(provider, SUPERDISPATCH);
+        provider->release();
+    }
+    return kIOReturnSuccess;
+}
+
+// MARK: App commands (via DroboUserClient)
+
+enum : uint32_t {
+    kDroboAppCommandSetWritable = 1,    // argument = LUN bit mask
+    kDroboAppCommandBlink       = 2,
+    kDroboAppCommandStandby     = 3,
+    kDroboAppCommandRename      = 4,    // argument = current UTC seconds, name = new name
+};
+
+kern_return_t
+DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char * name)
+{
+    if (ivars == nullptr || ivars->probeQueue == nullptr || ivars->stopping || !ivars->ready) {
+        return kIOReturnNotReady;
+    }
+    char nameCopy[33] = {};
+    if (name != nullptr) {
+        strlcpy(nameCopy, name, sizeof(nameCopy));
+    }
+    __block kern_return_t result = kIOReturnSuccess;
+    const char * namePointer = nameCopy;
+
+    ivars->probeQueue->DispatchSync(^{
+        DroboSCSIController_IVars * iv = ivars;
+        switch (command) {
+            case kDroboAppCommandSetWritable: {
+                uint32_t present = 0;
+                for (uint32_t lun = 0; lun < 32; lun++) {
+                    if (iv->luns[lun].present) {
+                        present |= 1u << lun;
+                    }
+                }
+                const uint32_t mask = argument & present;
+                if (mask == iv->writableMask) {
+                    break;
+                }
+                if (iv->inflight != 0 || iv->pendingCount != 0) {
+                    result = kIOReturnBusy;         // eject the volumes first
+                    break;
+                }
+                iv->writableMask = mask;
+                PublishStatus(this, iv);
+                // macOS reads the write-protect state when a disk appears, so the disks have
+                // to be re-announced for the change to take effect.
+                if (iv->targetQueue != nullptr) {
+                    iv->targetQueue->DispatchAsync(^{
+                        ivars->targetCallInFlight = true;
+                        UserDestroyTargetForID(0);
+                        OSDictionary * target = OSDictionary::withCapacity(1);
+                        ivars->createTargetResult = (uint32_t) UserCreateTargetForID(0, target);
+                        OSSafeReleaseNULL(target);
+                        ivars->targetCallInFlight = false;
+                    });
+                }
+                break;
+            }
+            case kDroboAppCommandBlink:
+            case kDroboAppCommandStandby:
+            case kDroboAppCommandRename: {
+                if (iv->commandPending || iv->commandInflight || !iv->healthAvailable) {
+                    result = kIOReturnBusy;
+                    break;
+                }
+                bzero(iv->commandCDB, sizeof(iv->commandCDB));
+                bzero(iv->commandData, sizeof(iv->commandData));
+                if (command == kDroboAppCommandRename) {
+                    // MODE SELECT(10), page 0x7A sub-page 0x05: UTC seconds, offset, name[32].
+                    iv->commandDataOut = true;
+                    iv->commandLength  = 42;
+                    iv->commandData[0] = 0x7A;
+                    iv->commandData[1] = 0x05;
+                    iv->commandData[3] = 38;
+                    PutBE32(&iv->commandData[4], argument);
+                    memcpy(&iv->commandData[10], namePointer, 32);
+                    iv->commandCDB[0] = 0x55;
+                    iv->commandCDB[1] = 0x01;
+                    iv->commandCDB[2] = 0x7A;
+                    iv->commandCDB[3] = 0x05;
+                    iv->commandCDB[8] = 42;
+                } else {
+                    // Vendor command 0xEA: 0x06 = blink the lights, 0x0D = flush and stand by.
+                    iv->commandDataOut = false;
+                    iv->commandLength  = 1;
+                    iv->commandCDB[0] = 0xEA;
+                    iv->commandCDB[1] = 0x10;
+                    iv->commandCDB[3] = (command == kDroboAppCommandBlink) ? 0x06 : 0x0D;
+                    iv->commandCDB[5] = ++iv->commandSequence;
+                    iv->commandCDB[6] = 0x20;
+                    iv->commandCDB[8] = 0x01;
+                }
+                iv->commandPending = true;
+                HealthSend();                       // goes now if the channel is idle
+                break;
+            }
+            default:
+                result = kIOReturnUnsupported;
+                break;
+        }
+    });
+    return result;
+}
+
+kern_return_t
+IMPL(DroboSCSIController, NewUserClient)
+{
+    IOService * client = nullptr;
+    kern_return_t ret = Create(this, "UserClientProperties", &client);
+    if (ret != kIOReturnSuccess || client == nullptr) {
+        return ret != kIOReturnSuccess ? ret : kIOReturnError;
+    }
+    *userClient = OSDynamicCast(IOUserClient, client);
+    if (*userClient == nullptr) {
+        client->release();
+        return kIOReturnError;
+    }
     return kIOReturnSuccess;
 }
 
@@ -1302,13 +1471,18 @@ DroboSCSIController::ProcessCompletions()
             iv->lastSCSIStatus  = scsiStatus;
             const uint64_t length = iv->slots[index].length;
             if ((srbResponse != kDroboSRBResponseSuccess && srbResponse != kDroboSRBResponseShort) || scsiStatus != 0) {
-                DLog("read failed: slot %u tid %u srb 0x%x status 0x%x", index, transactionID, srbResponse, scsiStatus);
+                DLog("I/O failed: slot %u tid %u srb 0x%x status 0x%x", index, transactionID, srbResponse, scsiStatus);
                 iv->statErrors++;
                 CompleteSlot(index, kSCSITaskStatus_CHECK_CONDITION, kSCSIServiceResponse_TASK_COMPLETE, 0, kSenseHardwareError, 0x44);
             } else {
                 const uint64_t bytes = transferred < length ? transferred : length;
-                iv->statReads++;
-                iv->statReadBytes += bytes;
+                if (iv->slots[index].isWrite) {
+                    iv->statWrites++;
+                    iv->statWriteBytes += bytes;
+                } else {
+                    iv->statReads++;
+                    iv->statReadBytes += bytes;
+                }
                 const uint32_t bucket = length <= 0x1000 ? 0 : (length <= 0x10000 ? 1 : (length <= 0x40000 ? 2 : 3));
                 const uint64_t elapsed = mach_absolute_time() - iv->slots[index].submitTime;
                 iv->latencyCount[bucket]++;
@@ -1400,17 +1574,30 @@ DroboSCSIController::Pump()
     }
 }
 
-// Validates a READ and queues it. Returns true when `response` already holds the final
-// answer (error or zero-length), false when the task was queued and completes later.
+// Validates a READ or WRITE and queues it. Returns true when `response` already holds the
+// final answer (error or zero-length), false when the task was queued and completes later.
 bool
-DroboSCSIController::QueueRead(const SCSIUserParallelTask * task, OSAction * completion,
-                               SCSIUserParallelResponse * response, uint32_t lun, uint64_t lba, uint32_t blocks)
+DroboSCSIController::QueueIO(const SCSIUserParallelTask * task, OSAction * completion,
+                             SCSIUserParallelResponse * response, uint32_t lun, uint64_t lba, uint32_t blocks,
+                             bool isWrite)
 {
     DroboSCSIController_IVars * iv = ivars;
     const uint64_t length = (uint64_t) blocks * 512;
 
+    if (isWrite && (iv->writableMask & (1u << lun)) == 0) {
+        iv->statRejectedWrites++;
+        SetSense(response, kSenseDataProtect, 0x27, 0x00);     // write protected
+        return true;
+    }
     if (blocks == 0) {
         return true;                                        // GOOD, nothing to transfer
+    }
+    // The data must flow the way the command says, or we would hand the Drobo the wrong buffer.
+    if (task->fTransferDirection != (isWrite ? kSCSIDataTransfer_FromInitiatorToTarget
+                                             : kSCSIDataTransfer_FromTargetToInitiator)) {
+        iv->statErrors++;
+        SetSense(response, kSenseIllegalRequest, 0x24, 0x00);
+        return true;
     }
     if (lba + blocks > iv->luns[lun].blockCount || lba + blocks < lba) {
         SetSense(response, kSenseIllegalRequest, 0x21, 0x00);   // LBA out of range
@@ -1418,7 +1605,7 @@ DroboSCSIController::QueueRead(const SCSIUserParallelTask * task, OSAction * com
     }
     if (length > iv->maxTransferSize || length > task->fRequestedTransferCount ||
         task->fBufferIOVMAddr == 0 || ((task->fBufferIOVMAddr + length - 1) >> 32) != 0) {
-        DLog("read rejected: len 0x%llx requested 0x%llx iova 0x%llx", length,
+        DLog("I/O rejected: len 0x%llx requested 0x%llx iova 0x%llx", length,
              task->fRequestedTransferCount, task->fBufferIOVMAddr);
         iv->statErrors++;
         SetSense(response, kSenseIllegalRequest, 0x24, 0x00);
@@ -1445,6 +1632,7 @@ DroboSCSIController::QueueRead(const SCSIUserParallelTask * task, OSAction * com
     slot->inUse      = true;
     slot->submitted  = false;
     slot->length     = length;
+    slot->isWrite    = isWrite;
     slot->targetID   = task->fTargetID;
     slot->taskID     = task->fControllerTaskIdentifier;
     slot->completion = completion;
@@ -1459,7 +1647,7 @@ DroboSCSIController::QueueRead(const SCSIUserParallelTask * task, OSAction * com
     request->header.hostCookie         = task->fControllerTaskIdentifier;
     request->header.totalLength        = (uint32_t) sizeof(DroboBlockRequest) + (uint32_t) sizeof(DroboSGLEntry);
     request->header.kind               = kDroboRequestKindBlockIO;
-    request->operation                 = kDroboBlockOpRead;
+    request->operation                 = isWrite ? kDroboBlockOpWrite : kDroboBlockOpRead;
     request->transferLength            = (uint32_t) length;
     request->hostSGLPointer            = (uint64_t) (uintptr_t) sgl;
     request->lun                       = lun;
@@ -1487,6 +1675,8 @@ HealthPageLength(DroboSCSIController_IVars * iv, uint8_t page)
         case 0x06: return 4 + 2;                                // protocol version
         case 0x08: return 4 + 310;                              // firmware
         case 0x09: return 4 + 8;                                // status, relayout count
+        case 0x30: return 4 + 9;                                // options: thresholds
+        case 0x31: return 4 + 34;                               // options 2: flags, spin-down
         default:   return 0;
     }
 }
@@ -1500,7 +1690,7 @@ DroboSCSIController::PublishHealth()
         return;
     }
     static const char * const kKeys[kHealthPageCount] = {
-        "Config", "Capacity", "Slots", "Settings", "Protocol", "Firmware", "Status"
+        "Config", "Capacity", "Slots", "Settings", "Protocol", "Firmware", "Status", "Options", "Options2"
     };
     for (uint32_t i = 0; i < kHealthPageCount; i++) {
         if (iv->healthLength[i] != 0) {
@@ -1531,8 +1721,9 @@ bool
 DroboSCSIController::HealthSend()
 {
     DroboSCSIController_IVars * iv = ivars;
+    const bool isCommand = iv->commandPending;
     if (!iv->ready || iv->dead || iv->stopping || !iv->healthAvailable || iv->tmInflight ||
-        iv->healthPage >= kHealthPageCount) {
+        (!isCommand && iv->healthPage >= kHealthPageCount)) {
         return false;
     }
     const uint32_t cause = Reg32(iv, kDroboRegIncomingDoorbellCause);
@@ -1540,8 +1731,8 @@ DroboSCSIController::HealthSend()
         return false;                               // previous request not consumed yet
     }
 
-    const uint8_t  page   = kHealthPages[iv->healthPage];
-    const uint32_t length = HealthPageLength(iv, page);
+    const uint8_t  page   = isCommand ? 0 : kHealthPages[iv->healthPage];
+    const uint32_t length = isCommand ? iv->commandLength : HealthPageLength(iv, page);
     uint8_t * memory = iv->requestVA + kHealthSlot * kDroboSlotSize;
     bzero(memory, kDroboSlotSize);
     bzero(iv->requestVA + kHealthDataOffset, kHealthPageMax);
@@ -1556,15 +1747,26 @@ DroboSCSIController::HealthSend()
     // One data segment: the original driver then puts the buffer's bus address straight into
     // the pointer field and sets the "direct buffer" flag instead of describing an SGL.
     // (Without one of the two mode flags the Drobo answers SRB response 4, error.)
-    request->flags                     = kDroboPassthroughDataInOrNone | kDroboPassthroughDirectBuffer;
+    request->flags                     = ((isCommand && iv->commandDataOut) ? kDroboPassthroughDataOut
+                                                                             : kDroboPassthroughDataInOrNone) |
+                                         kDroboPassthroughDirectBuffer;
     request->transferLength            = length;
     request->hostSGLPointer            = iv->requestBusAddress + kHealthDataOffset;
     // MODE SENSE(10): page 0x3A (vendor), sub-page = the management page, big-endian length.
-    request->cdb[0] = 0x5A;
-    request->cdb[2] = 0x3A;
-    request->cdb[3] = page;
-    request->cdb[7] = (uint8_t) (length >> 8);
-    request->cdb[8] = (uint8_t) length;
+    if (isCommand) {
+        memcpy(request->cdb, iv->commandCDB, sizeof(request->cdb));
+        if (iv->commandDataOut) {
+            memcpy(iv->requestVA + kHealthDataOffset, iv->commandData, iv->commandLength);
+        }
+        iv->commandPending = false;
+        iv->commandInflight = true;
+    } else {
+        request->cdb[0] = 0x5A;
+        request->cdb[2] = 0x3A;
+        request->cdb[3] = page;
+        request->cdb[7] = (uint8_t) (length >> 8);
+        request->cdb[8] = (uint8_t) length;
+    }
     sgl[0].address = iv->requestBusAddress + kHealthDataOffset;
     sgl[0].length  = 0;                             // cleared in direct-buffer mode, as the kext does
 
@@ -1594,6 +1796,16 @@ DroboSCSIController::HealthResponse()
     const uint32_t scsiStatus  = Port32(iv, base + 0x18);
     RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitTMResponse);
 
+    if (iv->commandInflight) {
+        // Answer to an app command (blink, standby, rename): record it and carry on polling.
+        iv->commandInflight = false;
+        iv->tmInflight = false;
+        iv->lastCommandSRB = srbResponse;
+        iv->statCommands++;
+        PublishStatus(this, iv);
+        HealthSend();
+        return;
+    }
     if (!iv->tmInflight || iv->healthPage >= kHealthPageCount) {
         return;
     }
@@ -1640,6 +1852,7 @@ IMPL(DroboSCSIController, HandleHealthTimer)
     // A health query that never came back disables health polling; block I/O is unaffected.
     if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > 10000 * iv->ticksPerMillisecond) {
         iv->tmInflight = false;
+        iv->commandInflight = false;
         iv->healthAvailable = false;
         iv->healthErrors++;
         PublishHealth();
@@ -1796,26 +2009,35 @@ DroboSCSIController::HandleTask(const SCSIUserParallelTask * task, OSAction * co
             SetSense(response, kSenseIllegalRequest, 0x24, 0x00);
             return true;
 
-        case 0x1A:                                          // MODE SENSE 6: header only, write-protected
-            data[0] = 3; data[2] = 0x80;
+        case 0x1A:                                          // MODE SENSE 6: header only; WP unless writable
+            data[0] = 3; data[2] = (iv->writableMask & (1u << lun)) ? 0x00 : 0x80;
             response->fBytesTransferred = CopyToTask(task, data, 4);
             return true;
         case 0x5A:                                          // MODE SENSE 10
-            data[1] = 6; data[3] = 0x80;
+            data[1] = 6; data[3] = (iv->writableMask & (1u << lun)) ? 0x00 : 0x80;
             response->fBytesTransferred = CopyToTask(task, data, 8);
             return true;
 
         case 0x08:                                          // READ 6
-            return QueueRead(task, completion, response, lun, ((uint32_t) (cdb[1] & 0x1F) << 16) | BE16(&cdb[2]), cdb[4] ? cdb[4] : 256);
+            return QueueIO(task, completion, response, lun, ((uint32_t) (cdb[1] & 0x1F) << 16) | BE16(&cdb[2]), cdb[4] ? cdb[4] : 256, false);
         case 0x28:                                          // READ 10
-            return QueueRead(task, completion, response, lun, BE32(&cdb[2]), BE16(&cdb[7]));
+            return QueueIO(task, completion, response, lun, BE32(&cdb[2]), BE16(&cdb[7]), false);
         case 0xA8:                                          // READ 12
-            return QueueRead(task, completion, response, lun, BE32(&cdb[2]), BE32(&cdb[6]));
+            return QueueIO(task, completion, response, lun, BE32(&cdb[2]), BE32(&cdb[6]), false);
         case 0x88:                                          // READ 16
-            return QueueRead(task, completion, response, lun, BE64(&cdb[2]), BE32(&cdb[10]));
+            return QueueIO(task, completion, response, lun, BE64(&cdb[2]), BE32(&cdb[10]), false);
 
-        // Everything that could modify the volume is refused here and never reaches the Drobo.
-        case 0x0A: case 0x2A: case 0xAA: case 0x8A:         // WRITE 6/10/12/16
+        // Writes go to the Drobo only for LUNs the user made writable (QueueIO checks).
+        case 0x0A:                                          // WRITE 6
+            return QueueIO(task, completion, response, lun, ((uint32_t) (cdb[1] & 0x1F) << 16) | BE16(&cdb[2]), cdb[4] ? cdb[4] : 256, true);
+        case 0x2A:                                          // WRITE 10
+            return QueueIO(task, completion, response, lun, BE32(&cdb[2]), BE16(&cdb[7]), true);
+        case 0xAA:                                          // WRITE 12
+            return QueueIO(task, completion, response, lun, BE32(&cdb[2]), BE32(&cdb[6]), true);
+        case 0x8A:                                          // WRITE 16
+            return QueueIO(task, completion, response, lun, BE64(&cdb[2]), BE32(&cdb[10]), true);
+
+        // Other commands that modify the volume are never forwarded.
         case 0x2E: case 0xAE: case 0x8E:                    // WRITE AND VERIFY
         case 0x41: case 0x93:                               // WRITE SAME
         case 0x42:                                          // UNMAP
@@ -1824,7 +2046,11 @@ DroboSCSIController::HandleTask(const SCSIUserParallelTask * task, OSAction * co
         case 0x15: case 0x55:                               // MODE SELECT
         case 0x48:                                          // SANITIZE
             iv->statRejectedWrites++;
-            SetSense(response, kSenseDataProtect, 0x27, 0x00);      // write protected
+            if ((iv->writableMask & (1u << lun)) != 0) {
+                SetSense(response, kSenseIllegalRequest, 0x20, 0x00);   // not supported: use plain WRITE
+            } else {
+                SetSense(response, kSenseDataProtect, 0x27, 0x00);      // write protected
+            }
             return true;
 
         default:

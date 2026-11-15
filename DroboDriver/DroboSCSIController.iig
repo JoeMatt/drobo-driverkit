@@ -2,8 +2,9 @@
 //  DroboSCSIController.iig
 //
 //  DriverKit SCSI controller for the Drobo 8D (PCI 0x4452:0x3844 over Thunderbolt).
-//  Read-only: publishes the Drobo's LUNs as write-protected disks. Reads run concurrently
-//  (32 slots, bursts per doorbell) and complete from an MSI handler, with a timer fallback.
+//  Publishes the Drobo's LUNs as disks, write-protected unless the user enables writing per
+//  LUN. I/O runs concurrently (32 slots, bursts per doorbell) and completes from an MSI
+//  handler, with a timer fallback. Health pages and app commands use the passthrough channel.
 //
 
 #ifndef DroboSCSIController_h
@@ -11,6 +12,7 @@
 
 #include <Availability.h>
 #include <DriverKit/IOService.iig>
+#include <DriverKit/IOUserClient.iig>
 #include <DriverKit/IOInterruptDispatchSource.iig>
 #include <DriverKit/IOTimerDispatchSource.iig>
 #include <SCSIControllerDriverKit/IOUserSCSIParallelInterfaceController.iig>
@@ -23,6 +25,10 @@ public:
 
     virtual kern_return_t Start(IOService * provider) override;
     virtual kern_return_t Stop(IOService * provider) override;
+    virtual kern_return_t NewUserClient(uint32_t type, IOUserClient ** userClient) override;
+
+    // Called in-process by DroboUserClient on behalf of the host app.
+    kern_return_t AppCommand(uint32_t command, uint32_t argument, const char * name) LOCALONLY;
 
     virtual kern_return_t UserReportHBAHighestLogicalUnitNumber(uint64_t * value) override;
     virtual kern_return_t UserDoesHBASupportSCSIParallelFeature(uint32_t theValue, bool * result) override;
@@ -74,8 +80,8 @@ protected:
 
     // Local (in-process) helpers.
     bool HandleTask(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response) LOCALONLY;
-    bool QueueRead(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response,
-                   uint32_t lun, uint64_t lba, uint32_t blocks) LOCALONLY;
+    bool QueueIO(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response,
+                 uint32_t lun, uint64_t lba, uint32_t blocks, bool isWrite) LOCALONLY;
     void Pump() LOCALONLY;
     uint32_t ProcessCompletions() LOCALONLY;
     void CompleteSlot(uint32_t index, uint32_t taskStatus, uint32_t serviceResponse, uint64_t bytes,

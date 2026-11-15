@@ -21,12 +21,12 @@ struct DroboSlot: Identifiable {
         if isEmpty { return "Empty" }
         switch statusCode & 0x0F {
         case 0: return "Off"
-        case 1: return "Red: failed"
-        case 2: return "Yellow: replace soon"
-        case 3: return "Green: healthy"
-        case 4: return "Blinking yellow/green: rebuilding, do not remove"
-        case 5: return "Red/yellow"
-        case 6: return "Blinking red: failed, replace"
+        case 1: return "Failed"
+        case 2: return "Replace soon"
+        case 3: return "Healthy"
+        case 4: return "Rebuilding"
+        case 5: return "Warning"
+        case 6: return "Failed, replace"
         default: return "Unknown (\(statusCode))"
         }
     }
@@ -36,6 +36,29 @@ struct DroboVolume: Identifiable {
     let id: URL
     let name: String
     let totalBytes: Int64
+    /// The Drobo logical unit this volume lives on.
+    let lun: Int
+}
+
+/// One logical unit as the Drobo presents it, with the mounted volume on it if there is one.
+struct DroboLUN: Identifiable {
+    let id: Int
+    let bytes: UInt64
+    /// Names of the mounted volumes on this unit (empty when nothing is mounted).
+    let volumeNames: [String]
+    /// BSD name of the unit's whole disk, e.g. "disk24"; nil if macOS has no disk for it.
+    let bsdName: String?
+    let writable: Bool
+
+    var isMounted: Bool { !volumeNames.isEmpty }
+}
+
+/// Commands the driver accepts from the app (must match the driver's enum).
+enum DroboCommand: UInt32 {
+    case setWritable = 1
+    case blink = 2
+    case standby = 3
+    case rename = 4
 }
 
 struct DroboSnapshot {
@@ -50,6 +73,12 @@ struct DroboSnapshot {
     var errors: UInt64 = 0
     var rejectedWrites: UInt64 = 0
     var inflight = 0
+    var writes: UInt64 = 0
+    var writeBytes: UInt64 = 0
+    var writableMask: UInt32 = 0
+    var lunBlocks: [UInt64] = []
+    var dualDiskRedundancy: Bool?
+    var spinDownMinutes: Int?
 
     var healthAvailable = false
     var healthCycles: UInt64 = 0
@@ -108,6 +137,14 @@ enum DroboMonitor {
             snapshot.errors = UInt64(number(status["Errors"]))
             snapshot.rejectedWrites = UInt64(number(status["RejectedWrites"]))
             snapshot.inflight = number(status["Inflight"])
+            snapshot.writes = UInt64(number(status["Writes"]))
+            snapshot.writeBytes = (status["WriteBytes"] as? NSNumber)?.uint64Value ?? 0
+            snapshot.writableMask = (status["WritableMask"] as? NSNumber)?.uint32Value ?? 0
+            if let data = status["LUNBlocks"] as? Data {
+                snapshot.lunBlocks = data.withUnsafeBytes { raw in
+                    (0..<(data.count / 8)).map { raw.loadUnaligned(fromByteOffset: $0 * 8, as: UInt64.self) }
+                }
+            }
         }
 
         guard let health = properties["DroboHealth"] as? [String: Any] else { return snapshot }
@@ -134,6 +171,12 @@ enum DroboMonitor {
             let version = string(page, 54, 16)
             snapshot.firmware = version.isEmpty ? "\(page[0]).\(page[1])" : version
         }
+        if let page = payload(health["Options2"]), page.count >= 10 {
+            // flags u64 (bit 0 dual disk redundancy, bit 1 spin-down enabled), minutes u16.
+            let flags = be64(page, 0)
+            snapshot.dualDiskRedundancy = flags & 0x1 != 0
+            snapshot.spinDownMinutes = flags & 0x2 != 0 ? Int(be16(page, 8)) : 0
+        }
         if let page = payload(health["Slots"]), page.count >= 1 {
             // One count byte, then 72-byte records:
             // u16, slot id, physical u64, managed u64, status, identity[32], short identity[16], u32.
@@ -156,22 +199,95 @@ enum DroboMonitor {
         return snapshot
     }
 
-    /// Mounted volumes whose disk reports "Drobo" as its vendor (the driver's INQUIRY data).
+    /// Mounted volumes that live on one of the Drobo's logical units.
     static func volumes() -> [DroboVolume] {
         guard let session = DASessionCreate(kCFAllocatorDefault) else { return [] }
         let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
                                                          options: [.skipHiddenVolumes]) ?? []
         return urls.compactMap { url in
-            guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL),
-                  let description = DADiskCopyDescription(disk) as? [String: Any],
-                  let vendor = description[kDADiskDescriptionDeviceVendorKey as String] as? String,
-                  vendor.trimmingCharacters(in: .whitespaces) == "Drobo" else { return nil }
+            guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) else { return nil }
+            let media = DADiskCopyIOMedia(disk)
+            guard media != 0 else { return nil }
+            defer { IOObjectRelease(media) }
+            guard let lun = droboLUN(of: media) else { return nil }
             let values = try? url.resourceValues(forKeys: Set(keys))
             return DroboVolume(id: url,
                                name: values?.volumeName ?? url.lastPathComponent,
-                               totalBytes: Int64(values?.volumeTotalCapacity ?? 0))
+                               totalBytes: Int64(values?.volumeTotalCapacity ?? 0),
+                               lun: lun)
         }
+    }
+
+    /// Walks up the IORegistry from a disk to find which Drobo logical unit it belongs to.
+    /// Works for APFS volumes too, whose synthesized disks sit several levels above the
+    /// physical one. Returns nil for anything that is not on our driver.
+    private static func droboLUN(of media: io_service_t) -> Int? {
+        var lun: Int?
+        var entry = media
+        IOObjectRetain(entry)
+        for _ in 0..<48 {
+            if let number = IORegistryEntryCreateCFProperty(entry, "SCSI Logical Unit Number" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? NSNumber {
+                lun = number.intValue
+            }
+            if let userClass = IORegistryEntryCreateCFProperty(entry, "IOUserClass" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String, userClass == "DroboSCSIController" {
+                IOObjectRelease(entry)
+                return lun
+            }
+            var parent: io_registry_entry_t = 0
+            let result = IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent)
+            IOObjectRelease(entry)
+            guard result == KERN_SUCCESS, parent != 0 else { return nil }
+            entry = parent
+        }
+        IOObjectRelease(entry)
+        return nil
+    }
+
+    /// BSD names of the whole disks macOS created for the Drobo's units, by LUN.
+    private static func wholeDisks() -> [Int: String] {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOMedia"), &iterator) == KERN_SUCCESS else {
+            return [:]
+        }
+        defer { IOObjectRelease(iterator) }
+        var disks: [Int: String] = [:]
+        while case let media = IOIteratorNext(iterator), media != 0 {
+            defer { IOObjectRelease(media) }
+            guard let whole = IORegistryEntryCreateCFProperty(media, "Whole" as CFString, kCFAllocatorDefault, 0)?
+                    .takeRetainedValue() as? Bool, whole,
+                  let bsd = IORegistryEntryCreateCFProperty(media, "BSD Name" as CFString, kCFAllocatorDefault, 0)?
+                    .takeRetainedValue() as? String,
+                  let lun = droboLUN(of: media) else { continue }
+            // A unit's physical disk is the lowest-numbered whole disk above it; APFS
+            // containers on the same unit are synthesized later and get higher numbers.
+            if let existing = disks[lun], diskNumber(existing) <= diskNumber(bsd) { continue }
+            disks[lun] = bsd
+        }
+        return disks
+    }
+
+    private static func diskNumber(_ bsd: String) -> Int { Int(bsd.dropFirst(4)) ?? Int.max }
+
+    /// Mounts or unmounts every volume on one of the Drobo's disks. Returns nil on success.
+    static func setMounted(_ mounted: Bool, bsdName: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        process.arguments = [mounted ? "mountDisk" : "unmountDisk", bsdName]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return "Could not run diskutil."
+        }
+        if process.terminationStatus == 0 { return nil }
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Unmounts every Drobo volume. Calls back with the names that could not be ejected.
@@ -193,7 +309,64 @@ enum DroboMonitor {
         group.notify(queue: .main) { completion(failures) }
     }
 
+    /// The Drobo's logical units with whatever is mounted from each.
+    static func luns(_ snapshot: DroboSnapshot, volumes: [DroboVolume]) -> [DroboLUN] {
+        let disks = wholeDisks()
+        return snapshot.lunBlocks.enumerated().compactMap { index, blocks in
+            guard blocks > 1 else { return nil }
+            return DroboLUN(id: index,
+                            bytes: blocks * 512,
+                            volumeNames: volumes.filter { $0.lun == index }.map(\.name),
+                            bsdName: disks[index],
+                            writable: snapshot.writableMask & (1 << UInt32(index)) != 0)
+        }
+    }
+
+    /// Sends one command to the driver. Returns nil on success, or a short reason.
+    static func send(_ command: DroboCommand, argument: UInt32 = 0, name: String = "") -> String? {
+        guard let service = driverService() else { return "The driver is not running." }
+        defer { IOObjectRelease(service) }
+        var connection: io_connect_t = 0
+        let opened = IOServiceOpen(service, mach_task_self_, 0, &connection)
+        guard opened == KERN_SUCCESS else {
+            return "Could not connect to the driver (0x" + String(UInt32(bitPattern: opened), radix: 16) + ")."
+        }
+        defer { IOServiceClose(connection) }
+
+        // Layout must match DroboAppCommandInput in the driver: u32, u32, char[32].
+        var input = [UInt8](repeating: 0, count: 40)
+        withUnsafeBytes(of: command.rawValue.littleEndian) { input.replaceSubrange(0..<4, with: $0) }
+        withUnsafeBytes(of: argument.littleEndian) { input.replaceSubrange(4..<8, with: $0) }
+        let nameBytes = Array(name.utf8.prefix(31))
+        input.replaceSubrange(8..<(8 + nameBytes.count), with: nameBytes)
+
+        let result = IOConnectCallStructMethod(connection, 0, input, input.count, nil, nil)
+        switch result {
+        case KERN_SUCCESS: return nil
+        case kIOReturnBusy: return "The Drobo is busy. Eject its volumes and try again."
+        case kIOReturnNotReady: return "The Drobo is not ready yet."
+        default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
+        }
+    }
+
     // MARK: Registry access
+
+    private static func driverService() -> io_service_t? {
+        var iterator: io_iterator_t = 0
+        let matching = IOServiceMatching("IOUserSCSIParallelInterfaceController")
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            if let userClass = IORegistryEntryCreateCFProperty(service, "IOUserClass" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String, userClass == "DroboSCSIController" {
+                return service
+            }
+            IOObjectRelease(service)
+        }
+        return nil
+    }
 
     private static func driverProperties() -> [String: Any]? {
         var iterator: io_iterator_t = 0

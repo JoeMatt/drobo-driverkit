@@ -16,10 +16,11 @@ for the direct-attached Thunderbolt units.
 |---|---|
 | Drobo 8D over Thunderbolt 3 | Works |
 | Reading your volumes | **Works** (HFS+ volumes mount read-only) |
-| Writing | **Not yet.** The driver refuses every write so it cannot damage a volume |
-| APFS volumes on the Drobo | Detected, but macOS will not mount APFS from a write-protected disk |
+| Writing | **Experimental and off by default.** You enable it per volume in the app. Implemented but not yet verified on hardware: keep a copy of anything on a volume you make writable |
+| APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
-| Changing Drobo settings, firmware updates | Not supported |
+| Blink lights, rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; blink, rename and shutdown not yet verified on hardware |
+| Creating/deleting volumes, changing Drobo settings, firmware updates | Not supported |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
 | Intel Macs | Not supported; use Drobo's original driver there |
 | A ready-to-run download | **Not available yet**, see below |
@@ -98,6 +99,7 @@ On [developer.apple.com/account](https://developer.apple.com/account), open
    - **DriverKit**
    - **DriverKit PCI (development)**
    - **DriverKit Family SCSI Controller (development)**
+   - **DriverKit Allow Any UserClient Access** (lets the app's buttons talk to the driver)
 
    Save.
 
@@ -204,7 +206,7 @@ Compile without signing:
 xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Roadmap: the write path, sleep/wake handling.
+Roadmap: verifying the write path, forwarding cache flushes, sleep/wake handling.
 
 The management pages the app shows are read with the protocol documented by the open-source
 [drobo-utils](https://github.com/petersilva/drobo-utils) project.

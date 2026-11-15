@@ -15,5 +15,8 @@
 	</array>
 	<key>com.apple.developer.driverkit.family.scsicontroller</key>
 	<true/>
+	<!-- Lets the host app open a connection to the driver for its controls. -->
+	<key>com.apple.developer.driverkit.allow-any-userclient-access</key>
+	<true/>
 </dict>
 </plist>
