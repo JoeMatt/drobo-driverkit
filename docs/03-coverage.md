@@ -81,3 +81,41 @@ protocol reference are marked as needing that analysis.
   CDBs and pages it sends that are not in the tables above. Record findings as a new section in
   the protocol notes before writing code.
 - Anything "unverified" needs a maintainer run on hardware; say exactly what to test in the PR.
+
+## Dashboard data: what the driver already publishes
+
+Checked against what a fuller third-party Drobo dashboard shows, to decide what the app can
+display without new protocol work. "Polled" means the driver already reads the page (sub-pages
+`01 02 03 05 06 08 09 30 31` of MODE SENSE page `0x3A`, protocol notes 11.5 and 11.6) and
+publishes its raw bytes under `DroboHealth`.
+
+| Dashboard feature | Source | Status |
+|---|---|---|
+| Array status, alerts ("notifications") | Status page `09` flags | shown (Summary) |
+| Relayout / rebuild count | Status page `09` | shown (Summary) |
+| Protected capacity, used, free | Capacity page `02` | shown (Summary) |
+| Unprotected capacity | Capacity page `02`, fourth u64 | decoded; shown when non-zero |
+| Capacity alert thresholds | Options page `30`, first two bytes (85 and 95 observed) | decoded; shown (Summary) |
+| Per-bay light, size, model | Slot page `03` | shown (Summary, Drives) |
+| Per-drive interface | Slot page `03`, last 8 bytes of the identity field | decoded; shown (Drives) |
+| Per-drive managed capacity | Slot page `03`, second u64 of the record | decoded; shown (Drives) |
+| Per-drive "short identity" and trailing u32 | Slot page `03` | polled, meaning unknown, not shown |
+| Name, serial | Settings page `05`, `DroboStatus` | shown |
+| Firmware version, build date, platform | Firmware page `08` | version and build shown; platform decoded only |
+| Device clock | Settings page `05` (UTC u32, offset u16) | polled, not decoded |
+| Slot count, max LUNs, max LUN size | Config page `01` | polled; only the slot count is used |
+| Protocol version | Protocol page `06` | polled, not decoded |
+| Dual disk redundancy, spin-down | Options page `31` | shown (Summary), editable (Advanced) |
+| Identify | Blink command | in the app (Drives, Advanced), unverified on hardware |
+| Open in Finder | no protocol needed | in the app (Volumes) |
+| Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
+| Temperature (average, max, controller) | no page in the notes or drobo-utils reference covers it | **unknown**, needs backlog item 1 |
+| Fan speed, uptime, power state | same | **unknown** |
+| Hot data cache, disk pack status, data integrity | same | **unknown** |
+| Events log, scans | same | **unknown** |
+| Performance history | would be collected by the app from the counters above | not implemented |
+| Several Drobos in one window | app reads the first controller only | not implemented, backlog item 11 |
+
+Nothing in the "unknown" rows is guessed into code. Each needs a reference (Drobo Dashboard's own
+requests, or a field observed on hardware and recorded in protocol notes section 11) before it is
+decoded.

@@ -42,12 +42,25 @@ enum Demo {
         snapshot.writes = 1_204
         snapshot.flushes = 37
         snapshot.errors = 0
+        snapshot.firmwareBuild = "Jan 01 2020,12:00:00"
+        snapshot.firmwarePlatform = "ArmMarvell"
+        snapshot.yellowThreshold = 85
+        snapshot.redThreshold = 95
+        snapshot.latency = [
+            DroboLatency(id: "4 KB", count: 96_210, averageMicroseconds: 310, maxMicroseconds: 48_200),
+            DroboLatency(id: "64 KB", count: 41_870, averageMicroseconds: 940, maxMicroseconds: 61_500),
+            DroboLatency(id: "256 KB", count: 30_112, averageMicroseconds: 2_860, maxMicroseconds: 88_000),
+            DroboLatency(id: "512 KB", count: 17_314, averageMicroseconds: 5_420, maxMicroseconds: 131_000),
+        ]
         let models = ["WDC WD80EFAX", "WDC WD80EFAX", "ST8000VN004", "ST8000VN004", "WDC WD40EFRX", "WDC WD40EFRX"]
         snapshot.slots = (0..<8).map { bay in
             guard bay < models.count else { return DroboSlot(id: bay, physicalBytes: 0, statusCode: 0x80, model: "") }
             let code: UInt8 = rebuilding && bay == 2 ? 4 : 3
-            return DroboSlot(id: bay, physicalBytes: (bay < 4 ? 8 : 4) * tb, statusCode: code, model: models[bay])
+            let size = (bay < 4 ? 8 : 4) * tb
+            return DroboSlot(id: bay, physicalBytes: size, statusCode: code, model: models[bay],
+                             managedBytes: size - 12_000_000_000, interface: "SATA")
         } + [DroboSlot(id: 8, physicalBytes: 0, statusCode: 0x80, model: "")]
+        snapshot.unprotectedBytes = 0
         data.snapshot = snapshot
         data.luns = [
             DroboLUN(id: 0, bytes: 16 * tb, volumeNames: ["Archive"], bsdName: nil, writable: false),

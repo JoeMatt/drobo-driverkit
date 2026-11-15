@@ -14,6 +14,10 @@ struct DroboSlot: Identifiable {
     let physicalBytes: UInt64
     let statusCode: UInt8
     let model: String
+    /// How much of the drive the Drobo is using for its disk pack, as the slot page reports it.
+    var managedBytes: UInt64 = 0
+    /// Drive interface from the slot page's identity field, e.g. "SATA".
+    var interface = ""
 
     var isEmpty: Bool { statusCode == 0x80 }
 
@@ -63,6 +67,14 @@ enum DroboCommand: UInt32 {
     case setOptions = 5
 }
 
+/// The driver's own timing for one size class of block request.
+struct DroboLatency: Identifiable {
+    let id: String              // "4 KB", "64 KB", ...
+    let count: UInt64
+    let averageMicroseconds: UInt64
+    let maxMicroseconds: UInt64
+}
+
 struct DroboSnapshot {
     var driverPresent = false
     var stage = ""
@@ -91,6 +103,12 @@ struct DroboSnapshot {
     var healthCycles: UInt64 = 0
     var name = ""
     var firmware = ""
+    var firmwareBuild = ""
+    var firmwarePlatform = ""
+    /// Capacity alert thresholds in percent used (options page 0x30).
+    var yellowThreshold: Int?
+    var redThreshold: Int?
+    var latency: [DroboLatency] = []
     var statusFlags: UInt32?
     var relayoutCount: UInt32 = 0
     var freeBytes: UInt64?
@@ -151,6 +169,12 @@ enum DroboMonitor {
             snapshot.lastCommandResult = number(status["LastCommandSRB"])
             snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
             snapshot.flushes = UInt64(number(status["Flushes"]))
+            snapshot.latency = [("4 KB", "4K"), ("64 KB", "64K"), ("256 KB", "256K"), ("512 KB", "512K")].map { label, key in
+                DroboLatency(id: label,
+                             count: UInt64(number(status["Latency\(key)Count"])),
+                             averageMicroseconds: UInt64(number(status["Latency\(key)AvgUS"])),
+                             maxMicroseconds: UInt64(number(status["Latency\(key)MaxUS"])))
+            }
             if let data = status["LUNBlocks"] as? Data {
                 snapshot.lunBlocks = data.withUnsafeBytes { raw in
                     (0..<(data.count / 8)).map { raw.loadUnaligned(fromByteOffset: $0 * 8, as: UInt64.self) }
@@ -181,6 +205,14 @@ enum DroboMonitor {
             // On the 8D the readable version ("4.2.3") is the third string.
             let version = string(page, 54, 16)
             snapshot.firmware = version.isEmpty ? "\(page[0]).\(page[1])" : version
+            snapshot.firmwareBuild = string(page, 6, 32)
+            snapshot.firmwarePlatform = string(page, 38, 16)
+        }
+        if let page = payload(health["Options"]), page.count >= 2,
+           (1...100).contains(page[0]), (1...100).contains(page[1]) {
+            // Observed on the 8D (protocol notes 11.6): yellow threshold, red threshold, percent.
+            snapshot.yellowThreshold = Int(page[0])
+            snapshot.redThreshold = Int(page[1])
         }
         if let page = payload(health["Options2"]), page.count >= 10 {
             // flags u64 (bit 0 dual disk redundancy, bit 1 spin-down enabled), minutes u16.
@@ -203,7 +235,9 @@ enum DroboMonitor {
                 slots.append(DroboSlot(id: slotID,
                                        physicalBytes: be64(page, offset + 3),
                                        statusCode: page[offset + 19],
-                                       model: vendor.isEmpty ? product : vendor + " " + product))
+                                       model: vendor.isEmpty ? product : vendor + " " + product,
+                                       managedBytes: be64(page, offset + 11),
+                                       interface: string(page, offset + 44, 8)))
                 offset += recordSize
             }
             snapshot.slots = slots

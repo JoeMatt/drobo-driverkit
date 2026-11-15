@@ -32,7 +32,8 @@ a good first PR).
 
 To look at the dashboard without a Drobo, run the built app with made-up data:
 `build/Build/Products/Debug/DroboDriverKit.app/Contents/MacOS/DroboDriverKit -demo healthy`
-(or `-demo rebuilding`). The UI's design primitives are in `DroboHost/Design.swift`.
+(or `-demo rebuilding`; add `-demoTab drives` to open on a tab). The UI's design primitives are
+in `DroboHost/Design.swift`.
 
 ## You almost certainly do not have the hardware
 

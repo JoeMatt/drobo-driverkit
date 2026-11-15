@@ -1,43 +1,78 @@
 import SwiftUI
 
-/// The dashboard window. Layout only: every action goes through `DashboardModel`, and the
-/// confirmation steps in front of the risky ones (write access, shut down, settings) live here.
+/// The dashboard window: a header, four tabs and a footer. Layout only: every action goes through
+/// `DashboardModel`, and the confirmation steps in front of the risky ones (write access, shut
+/// down, settings) live here.
 struct ContentView: View {
+    enum Tab: String, CaseIterable, Identifiable {
+        case summary = "Summary", drives = "Drives", volumes = "Volumes", advanced = "Advanced"
+        var id: String { rawValue }
+        var symbol: String {
+            switch self {
+            case .summary: return "square.grid.2x2"
+            case .drives: return "internaldrive"
+            case .volumes: return "externaldrive"
+            case .advanced: return "slider.horizontal.3"
+            }
+        }
+    }
+
     @StateObject private var model = ExtensionModel()
     @EnvironmentObject private var dashboard: DashboardModel
     @EnvironmentObject private var updates: UpdateChecker
+    @EnvironmentObject private var commandLine: CommandLineTool
+    /// Demo mode can open on a given tab: `-demo healthy -demoTab drives`.
+    @State private var tab: Tab = {
+        guard Demo.scenario != nil, let name = UserDefaults.standard.string(forKey: "demoTab") else { return .summary }
+        return Tab(rawValue: name.capitalized) ?? .summary
+    }()
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
     @State private var confirmWritable = false
-    @State private var showDriver = false
     @State private var showSettings = false
     @State private var editDual = false
     @State private var editSpin = 0
+    @Namespace private var tabSelection
 
-    /// Tallest the dashboard may be on the current screen. The window has a hidden title bar,
-    /// whose height is still added above the content, so leave room for it.
-    private var maxHeight: CGFloat {
-        // Demo mode can pretend the screen is small: `-demo healthy -demoMaxHeight 700`.
+    /// The window is one fixed size for every tab, so switching tabs never resizes it; a tab that
+    /// is taller than the space scrolls. Capped to the screen on small displays. The hidden
+    /// title bar's height is still added above the content, so leave room for it.
+    private var windowHeight: CGFloat {
+        // Demo mode can pretend the screen is small: `-demo healthy -demoMaxHeight 600`.
         let forced = UserDefaults.standard.double(forKey: "demoMaxHeight")
         if Demo.scenario != nil, forced > 0 { return forced }
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main
-        return max(420, (screen?.visibleFrame.height ?? 800) - 40)
+        return min(700, max(420, (screen?.visibleFrame.height ?? 800) - 40))
     }
 
     var body: some View {
-        // The window is exactly as tall as the dashboard when the screen allows it, and scrolls
-        // when it does not (small displays, or a long list of alerts and volumes).
-        ViewThatFits(in: .vertical) {
-            panels
-            ScrollView(.vertical) { panels }
+        let ready = dashboard.snapshot.ready
+        VStack(alignment: .leading, spacing: 10) {
+            header.rise(0)
+            if ready { tabBar.rise(1) }
+            ScrollView(.vertical) {
+                Group {
+                    if !ready {
+                        VStack(spacing: 10) { offline; driverCard }
+                    } else {
+                        switch tab {
+                        case .summary: summaryTab
+                        case .drives: drivesTab
+                        case .volumes: volumesTab
+                        case .advanced: advancedTab
+                        }
+                    }
+                }
+                .padding(.bottom, 4)
+            }
+            .rise(2)
+            footer
         }
-        .frame(width: 940)
-        .frame(maxHeight: maxHeight)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 12)
+        .frame(width: 940, height: windowHeight, alignment: .topLeading)
         .background(Backdrop().ignoresSafeArea())
         .preferredColorScheme(.dark)
-        .onAppear { showDriver = !dashboard.snapshot.driverPresent }
         .alert("Rename Drobo", isPresented: $showRename) {
             TextField("Name", text: $newName)
             Button("Rename") { dashboard.rename(to: newName) }
@@ -56,35 +91,6 @@ struct ContentView: View {
         } message: {
             Text(writableWarning)
         }
-    }
-
-    private var panels: some View {
-        let snapshot = dashboard.snapshot
-        return VStack(alignment: .leading, spacing: 10) {
-            header.rise(0)
-            if snapshot.ready {
-                HStack(alignment: .top, spacing: 12) {
-                    capacity
-                    protection.frame(width: 300)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .rise(1)
-                HStack(alignment: .top, spacing: 12) {
-                    bays
-                    volumes.frame(width: 350)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .rise(2)
-                tools.rise(3)
-            } else {
-                offline.rise(1)
-            }
-            driver.rise(4)
-            footer.rise(5)
-        }
-        .padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 14)
-        .frame(width: 940, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var writableWarning: String {
@@ -110,18 +116,18 @@ struct ContentView: View {
         dashboard.snapshot.statusLines.filter { $0 != "Healthy" && !$0.hasPrefix("Status bit") }
     }
 
-    // MARK: Header
+    // MARK: Header and tabs
 
     private var header: some View {
         let snapshot = dashboard.snapshot
         return HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Eyebrow(text: "Drobo 8D · Thunderbolt")
                     if Demo.scenario != nil { Eyebrow(text: "Demo data", tint: Theme.amber) }
                 }
                 Text(snapshot.name.isEmpty ? "Drobo 8D" : snapshot.name)
-                    .font(Theme.display(34, .semibold))
+                    .font(Theme.display(30, .semibold))
                     .foregroundStyle(Theme.primary)
                     .lineLimit(1)
                 if snapshot.ready {
@@ -134,7 +140,7 @@ struct ContentView: View {
             Spacer()
             if snapshot.ready { statusPill }
         }
-        .padding(.horizontal, 6).padding(.bottom, 8)
+        .padding(.horizontal, 6).padding(.bottom, 4)
     }
 
     private var statusPill: some View {
@@ -149,18 +155,77 @@ struct ContentView: View {
         .animation(Theme.spring, value: state.text)
     }
 
-    // MARK: Capacity
+    private var tabBar: some View {
+        HStack(spacing: 2) {
+            ForEach(Tab.allCases) { item in
+                Button {
+                    withAnimation(Theme.spring) { tab = item }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: item.symbol).font(.system(size: 12, weight: .light))
+                        Text(item.rawValue).font(Theme.text(12.5, .medium))
+                        if item == .drives, attentionBays > 0 { badge(attentionBays) }
+                    }
+                    .foregroundStyle(tab == item ? Theme.primary : Theme.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background {
+                        if tab == item {
+                            Capsule().fill(Color.white.opacity(0.10))
+                                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10)))
+                                .matchedGeometryEffect(id: "tab", in: tabSelection)
+                        }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(Capsule().fill(Color.white.opacity(0.03)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.06)))
+    }
+
+    /// Bays whose drive is in any state other than healthy.
+    private var attentionBays: Int {
+        dashboard.snapshot.slots.filter { !$0.isEmpty && $0.statusCode & 0x0F != 3 }.count
+    }
+
+    private func badge(_ count: Int) -> some View {
+        Text("\(count)")
+            .font(Theme.mono(9.5, .medium)).foregroundStyle(Theme.amber)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(Theme.amber.opacity(0.14)))
+    }
+
+    // MARK: Summary
+
+    private var summaryTab: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                capacity
+                protection.frame(width: 300)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 10) {
+                bayLights
+                details.frame(width: 420)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
     private var capacity: some View {
         let snapshot = dashboard.snapshot
         return Bezel(title: "Capacity") {
             if let used = snapshot.usedBytes, let free = snapshot.freeBytes, used + free > 0 {
                 let fraction = Double(used) / Double(used + free)
-                let tint = fraction > 0.95 ? Theme.coral : (fraction > 0.85 ? Theme.amber : Theme.emerald)
+                let red = Double(snapshot.redThreshold ?? 95) / 100
+                let yellow = Double(snapshot.yellowThreshold ?? 85) / 100
+                let tint = fraction > red ? Theme.coral : (fraction > yellow ? Theme.amber : Theme.emerald)
                 let figure = split(used)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(figure.value).font(Theme.display(46, .medium)).foregroundStyle(Theme.primary)
-                    Text(figure.unit).font(Theme.display(17, .medium)).foregroundStyle(Theme.secondary)
+                    Text(figure.value).font(Theme.display(44, .medium)).foregroundStyle(Theme.primary)
+                    Text(figure.unit).font(Theme.display(16, .medium)).foregroundStyle(Theme.secondary)
                     Text("used").font(Theme.text(13)).foregroundStyle(Theme.tertiary)
                     Spacer()
                     Text("\(Int((fraction * 100).rounded()))%")
@@ -170,7 +235,9 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     stat("Free", DashboardModel.bytes(free))
                     stat("Protected capacity", DashboardModel.bytes(used + free))
-                    stat("Drives", "\(snapshot.slots.filter { !$0.isEmpty }.count) of \(snapshot.slots.count)")
+                    if let unprotected = snapshot.unprotectedBytes, unprotected > 0 {
+                        stat("Unprotected", DashboardModel.bytes(unprotected))
+                    }
                 }
                 .padding(.top, 2)
             } else {
@@ -192,8 +259,6 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    // MARK: Protection
 
     private var protection: some View {
         let snapshot = dashboard.snapshot
@@ -237,47 +302,119 @@ struct ContentView: View {
             Text(label).font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
             Spacer()
             Text(value).font(Theme.text(12.5, .medium)).foregroundStyle(Theme.primary)
+                .lineLimit(1).textSelection(.enabled)
         }
     }
 
-    // MARK: Drive bays
+    /// One light per bay, like the front of the unit. Opens the Drives tab.
+    private var bayLights: some View {
+        let slots = dashboard.snapshot.slots
+        return Bezel(title: "Drive bays") {
+            Button("All drives") { withAnimation(Theme.spring) { tab = .drives } }
+                .buttonStyle(PillButtonStyle(icon: "arrow.right", compact: true))
+        } content: {
+            if slots.isEmpty {
+                Text("No bay information yet.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(slots) { slot in
+                        VStack(spacing: 7) {
+                            Capsule()
+                                .fill(slot.isEmpty ? Color.white.opacity(0.08) : color(for: slot))
+                                .frame(height: 7)
+                                .shadow(color: slot.isEmpty ? .clear : color(for: slot).opacity(0.6), radius: 5)
+                            Text(slot.id < 8 ? "\(slot.id + 1)" : "SSD")
+                                .font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .help(slot.isEmpty ? "Empty" : "\(DashboardModel.bytes(slot.physicalBytes)) \(slot.model): \(slot.statusText)")
+                    }
+                }
+                .padding(.top, 4)
+                let filled = slots.filter { !$0.isEmpty }
+                HStack(spacing: 0) {
+                    stat("Drives", "\(filled.count) of \(slots.count)")
+                    stat("Raw capacity", DashboardModel.bytes(filled.reduce(0) { $0 + $1.physicalBytes }))
+                    stat("Not healthy", "\(attentionBays)")
+                }
+                .padding(.top, 6)
+            }
+        }
+    }
 
-    private var bays: some View {
-        Bezel(title: "Drive bays") {
+    private var details: some View {
+        let snapshot = dashboard.snapshot
+        return Bezel(title: "Details") {
+            VStack(alignment: .leading, spacing: 9) {
+                row("cpu", "Firmware", snapshot.firmware.isEmpty ? "Unknown" : snapshot.firmware)
+                if !snapshot.firmwareBuild.isEmpty { row("calendar", "Firmware build", snapshot.firmwareBuild) }
+                row("bolt.horizontal", "Interface", "Thunderbolt")
+                row("number", "Serial", snapshot.serial)
+                if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold {
+                    row("gauge.with.dots.needle.33percent", "Capacity alerts", "\(yellow)% and \(red)%")
+                }
+                row("externaldrive", "Volumes", "\(dashboard.luns.filter(\.isMounted).count) mounted of \(dashboard.luns.count)")
+            }
+        }
+    }
+
+    // MARK: Drives
+
+    private var drivesTab: some View {
+        Bezel(title: "Drives") {
+            Button("Blink Lights") { dashboard.blink() }
+                .buttonStyle(PillButtonStyle(icon: "light.max", compact: true))
+                .disabled(dashboard.busy || !dashboard.snapshot.healthAvailable)
+                .help("Makes the Drobo's lights blink so you can tell which unit this is")
+        } content: {
             if dashboard.snapshot.slots.isEmpty {
                 Text("No bay information yet.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
             } else {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())], spacing: 8) {
-                    ForEach(dashboard.snapshot.slots) { bay($0) }
+                    ForEach(dashboard.snapshot.slots) { drive($0) }
                 }
             }
         }
     }
 
-    private func bay(_ slot: DroboSlot) -> some View {
+    private func drive(_ slot: DroboSlot) -> some View {
         let tint = color(for: slot)
-        let plate = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        return HStack(spacing: 10) {
-            Text(slot.id < 8 ? String(format: "%02d", slot.id + 1) : "SSD")
-                .font(Theme.mono(10, .medium)).foregroundStyle(Theme.tertiary)
-                .frame(width: 26, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(slot.isEmpty ? "Empty" : DashboardModel.bytes(slot.physicalBytes))
-                    .font(Theme.text(13, .medium)).foregroundStyle(Theme.primary)
-                Text(slot.isEmpty ? "No drive" : slot.model)
-                    .font(Theme.text(10.5)).foregroundStyle(Theme.tertiary).lineLimit(1)
+        let plate = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(slot.id < 8 ? "BAY \(slot.id + 1)" : "SSD BAY")
+                    .font(Theme.mono(9.5, .medium)).tracking(1.2).foregroundStyle(Theme.tertiary)
+                Spacer()
+                Text(slot.statusText).font(Theme.text(11, .medium)).foregroundStyle(slot.isEmpty ? Theme.tertiary : tint)
+                LED(color: tint, lit: !slot.isEmpty, pulsing: slot.statusCode & 0x0F == 4 && !slot.isEmpty, size: 7)
             }
-            Spacer(minLength: 4)
-            if !slot.isEmpty {
-                Text(slot.statusText).font(Theme.text(10.5, .medium)).foregroundStyle(tint).lineLimit(1)
+            if slot.isEmpty {
+                Text("No drive").font(Theme.text(13)).foregroundStyle(Theme.tertiary)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(DashboardModel.bytes(slot.physicalBytes)).font(Theme.display(19, .medium)).foregroundStyle(Theme.primary)
+                    Text(slot.model).font(Theme.text(12)).foregroundStyle(Theme.secondary)
+                        .lineLimit(1).textSelection(.enabled)
+                }
+                HStack(spacing: 14) {
+                    if !slot.interface.isEmpty { fact("Interface", slot.interface) }
+                    if slot.managedBytes > 0 { fact("Managed by Drobo", DashboardModel.bytes(slot.managedBytes)) }
+                }
             }
-            LED(color: tint, lit: !slot.isEmpty, pulsing: slot.statusCode & 0x0F == 4 && !slot.isEmpty, size: 7)
         }
-        .padding(.leading, 12).padding(.trailing, 6).padding(.vertical, 6)
+        .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
         .background(plate.fill(Color.white.opacity(slot.isEmpty ? 0.012 : 0.04)))
         .overlay(plate.strokeBorder(Color.white.opacity(0.07),
                                     style: StrokeStyle(lineWidth: 1, dash: slot.isEmpty ? [3, 3] : [])))
         .opacity(slot.isEmpty ? 0.62 : 1)
+    }
+
+    private func fact(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 5) {
+            Text(label).font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
+            Text(value).font(Theme.text(10.5, .medium)).foregroundStyle(Theme.secondary)
+        }
     }
 
     private func color(for slot: DroboSlot) -> Color {
@@ -292,7 +429,7 @@ struct ContentView: View {
 
     // MARK: Volumes
 
-    private var volumes: some View {
+    private var volumesTab: some View {
         Bezel(title: "Volumes") {
             Text("ALLOW WRITES").font(Theme.text(9, .medium)).tracking(1.4).foregroundStyle(Theme.tertiary)
         } content: {
@@ -300,17 +437,23 @@ struct ContentView: View {
                 ForEach(dashboard.luns) { lun in
                     HStack(spacing: 10) {
                         Image(systemName: "internaldrive")
-                            .font(.system(size: 14, weight: .light))
+                            .font(.system(size: 15, weight: .light))
                             .foregroundStyle(lun.isMounted ? Theme.primary : Theme.tertiary)
-                            .frame(width: 18)
+                            .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
-                                .font(Theme.text(13, .medium))
+                                .font(Theme.text(13.5, .medium))
                                 .foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary).lineLimit(1)
-                            Text(DashboardModel.bytes(lun.bytes) + (lun.writable ? " · read/write" : " · read-only"))
+                            Text("Unit \(lun.id) · " + DashboardModel.bytes(lun.bytes)
+                                 + (lun.bsdName.map { " · \($0)" } ?? "")
+                                 + (lun.writable ? " · read/write" : " · read-only"))
                                 .font(Theme.text(10.5)).foregroundStyle(lun.writable ? Theme.amber : Theme.tertiary)
                         }
                         Spacer(minLength: 4)
+                        if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
+                            Button("Open in Finder") { NSWorkspace.shared.open(url) }
+                                .buttonStyle(PillButtonStyle(icon: "folder", compact: true))
+                        }
                         Button(lun.isMounted ? "Unmount" : "Mount") { dashboard.setMounted(!lun.isMounted, lun: lun) }
                             .buttonStyle(PillButtonStyle(compact: true))
                             .disabled(lun.bsdName == nil || dashboard.busy)
@@ -320,14 +463,14 @@ struct ContentView: View {
                                 if on { dashboard.pendingWritable.insert(lun.id) } else { dashboard.pendingWritable.remove(lun.id) }
                             }))
                             .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(Theme.amber)
+                            .padding(.leading, 18)
                     }
-                    .padding(.vertical, 7)
+                    .padding(.vertical, 9)
                     if lun.id != dashboard.luns.last?.id { Rectangle().fill(Theme.hairline).frame(height: 1) }
                 }
                 if dashboard.luns.isEmpty {
                     Text("No volumes reported.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
                 }
-                Spacer(minLength: 10)
                 HStack(spacing: 8) {
                     Button("Eject All") { dashboard.ejectAll() }
                         .buttonStyle(PillButtonStyle(icon: "eject"))
@@ -337,14 +480,36 @@ struct ContentView: View {
                             .buttonStyle(PillButtonStyle(kind: .primary, icon: "arrow.up.right"))
                             .transition(.opacity.combined(with: .scale(scale: 0.92)))
                     }
+                    Spacer()
+                    message
                 }
+                .padding(.top, 12)
                 .disabled(dashboard.busy)
                 .animation(Theme.spring, value: dashboard.writableChanged)
             }
         }
     }
 
-    // MARK: Tools
+    @ViewBuilder private var message: some View {
+        if !dashboard.message.isEmpty {
+            Text(dashboard.message).font(Theme.text(12)).foregroundStyle(Theme.secondary)
+                .lineLimit(2).multilineTextAlignment(.trailing)
+        }
+    }
+
+    // MARK: Advanced
+
+    private var advancedTab: some View {
+        VStack(spacing: 10) {
+            tools
+            HStack(alignment: .top, spacing: 10) {
+                driverCard
+                latency.frame(width: 360)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            commandLineCard
+        }
+    }
 
     private var tools: some View {
         let unavailable = dashboard.busy || !dashboard.snapshot.healthAvailable
@@ -375,11 +540,115 @@ struct ContentView: View {
             if !dashboard.message.isEmpty {
                 Text(dashboard.message).font(Theme.text(12)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .animation(Theme.spring, value: dashboard.message)
+    }
+
+    private var driverCard: some View {
+        let snapshot = dashboard.snapshot
+        return Bezel(title: "Driver") {
+            if let url = updates.updateURL {
+                Button("Update available") { NSWorkspace.shared.open(url) }
+                    .buttonStyle(PillButtonStyle(icon: "arrow.down", compact: true))
+                    .help(updates.status)
+            }
+        } content: {
+            VStack(alignment: .leading, spacing: 10) {
+                if snapshot.driverPresent {
+                    HStack(spacing: 16) {
+                        rate("arrow.down", dashboard.readRate, Theme.emerald)
+                        rate("arrow.up", dashboard.writeRate, Theme.ice)
+                    }
+                    Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.flushes) flushes · \(snapshot.errors) errors")
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(snapshot.errors > 0 ? Theme.coral : Theme.tertiary)
+                } else {
+                    Text("Not running").font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                Text(model.status)
+                    .font(Theme.text(12)).foregroundStyle(Theme.secondary).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Activate") { model.activate() }
+                        .buttonStyle(PillButtonStyle(kind: snapshot.driverPresent ? .quiet : .primary, icon: "arrow.up.right"))
+                    Button("Deactivate") { model.deactivate() }
+                        .buttonStyle(PillButtonStyle())
+                }
+                .disabled(model.busy)
+            }
+        }
+    }
+
+    private static let rateFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        return formatter
+    }()
+
+    private func rate(_ symbol: String, _ value: Double, _ tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .regular)).foregroundStyle(tint)
+            Text(Self.rateFormatter.string(fromByteCount: Int64(max(0, value))) + "/s")
+                .font(Theme.mono(13, .medium)).foregroundStyle(Theme.primary)
+        }
+    }
+
+    /// The driver's own request timing since it started, by request size.
+    private var latency: some View {
+        let rows = dashboard.snapshot.latency.filter { $0.count > 0 }
+        return Bezel(title: "Request latency") {
+            if rows.isEmpty {
+                Text("No requests timed yet.").font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
+            } else {
+                Grid(alignment: .trailing, horizontalSpacing: 18, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Up to").gridColumnAlignment(.leading)
+                        Text("Requests")
+                        Text("Average")
+                        Text("Slowest")
+                    }
+                    .font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
+                    ForEach(rows) { row in
+                        GridRow {
+                            Text(row.id).font(Theme.text(12.5, .medium)).foregroundStyle(Theme.primary)
+                            Text("\(row.count)")
+                            Text(milliseconds(row.averageMicroseconds))
+                            Text(milliseconds(row.maxMicroseconds))
+                        }
+                        .font(Theme.mono(11.5)).foregroundStyle(Theme.secondary)
+                    }
+                }
+                Text("Since the driver started.").font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
+            }
+        }
+    }
+
+    private func milliseconds(_ microseconds: UInt64) -> String {
+        String(format: microseconds < 10_000 ? "%.2f ms" : "%.0f ms", Double(microseconds) / 1000)
+    }
+
+    private var commandLineCard: some View {
+        Bezel(title: "Command line") {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("drobo").font(Theme.mono(13, .medium)).foregroundStyle(Theme.primary)
+                    Text("Read-only status for terminals, scripts and status lines. " + commandLine.statusText)
+                        .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button(commandLine.actionTitle.replacingOccurrences(of: " Command Line Tool", with: "")) {
+                    commandLine.performAction()
+                }
+                .buttonStyle(PillButtonStyle(icon: "terminal"))
+                .disabled(!commandLine.canAct)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear { commandLine.refresh() }
     }
 
     // MARK: Not connected
@@ -391,7 +660,7 @@ struct ContentView: View {
                 Text(present ? "Waiting for the Drobo." : "No Drobo detected.")
                     .font(Theme.display(24, .medium)).foregroundStyle(Theme.primary)
                 Text(present
-                     ? "The driver is loaded and the Drobo is still finishing its start-up."
+                     ? "The driver is loaded and the Drobo is still finishing its start-up. This can take several minutes."
                      : "Check its power and the Thunderbolt cable, and that the driver is activated below.")
                     .font(Theme.text(13)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -399,7 +668,7 @@ struct ContentView: View {
                     Text(dashboard.message).font(Theme.text(12)).foregroundStyle(Theme.tertiary)
                 }
             }
-            .padding(.vertical, 18)
+            .padding(.vertical, 14)
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -444,80 +713,6 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
-    // MARK: Driver
-
-    private var driver: some View {
-        let snapshot = dashboard.snapshot
-        let plate = RoundedRectangle(cornerRadius: 20, style: .continuous)
-        return VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(Theme.spring) { showDriver.toggle() }
-            } label: {
-                HStack(spacing: 14) {
-                    Eyebrow(text: "Driver")
-                    if snapshot.driverPresent {
-                        rate("arrow.down", dashboard.readRate, Theme.emerald)
-                        rate("arrow.up", dashboard.writeRate, Theme.ice)
-                        Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.flushes) flushes · \(snapshot.errors) errors")
-                            .font(Theme.mono(10.5))
-                            .foregroundStyle(snapshot.errors > 0 ? Theme.coral : Theme.tertiary)
-                            .lineLimit(1)
-                    } else {
-                        Text("Not running").font(Theme.text(12)).foregroundStyle(Theme.secondary)
-                    }
-                    Spacer()
-                    if let url = updates.updateURL {
-                        Button("Update available") { NSWorkspace.shared.open(url) }
-                            .buttonStyle(PillButtonStyle(icon: "arrow.down", compact: true))
-                            .help(updates.status)
-                    }
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .regular)).foregroundStyle(Theme.secondary)
-                        .rotationEffect(.degrees(showDriver ? 180 : 0))
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.white.opacity(0.07)))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if showDriver {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(model.status)
-                        .font(Theme.text(12)).foregroundStyle(Theme.secondary).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Button("Activate") { model.activate() }
-                            .buttonStyle(PillButtonStyle(kind: .primary, icon: "arrow.up.right"))
-                        Button("Deactivate") { model.deactivate() }
-                            .buttonStyle(PillButtonStyle())
-                    }
-                    .disabled(model.busy)
-                }
-                .padding(.top, 12)
-                .transition(.opacity.combined(with: .offset(y: -6)))
-            }
-        }
-        .padding(.leading, 12).padding(.trailing, 10).padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(plate.fill(Color.white.opacity(0.03)))
-        .overlay(plate.strokeBorder(Color.white.opacity(0.06)))
-    }
-
-    private static let rateFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        formatter.allowsNonnumericFormatting = false
-        return formatter
-    }()
-
-    private func rate(_ symbol: String, _ value: Double, _ tint: Color) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbol).font(.system(size: 9, weight: .regular)).foregroundStyle(tint)
-            Text(Self.rateFormatter.string(fromByteCount: Int64(max(0, value))) + "/s")
-                .font(Theme.mono(11, .medium)).foregroundStyle(Theme.primary)
-        }
-    }
-
     // MARK: Footer
 
     private var footer: some View {
@@ -530,6 +725,6 @@ struct ContentView: View {
         .font(Theme.text(10.5))
         .foregroundStyle(Theme.tertiary)
         .tint(Theme.secondary)
-        .padding(.horizontal, 6).padding(.top, 2)
+        .padding(.horizontal, 6)
     }
 }

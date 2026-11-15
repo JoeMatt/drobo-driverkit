@@ -23,6 +23,7 @@ struct DroboHostApp: App {
             ContentView()
                 .environmentObject(dashboard)
                 .environmentObject(updates)
+                .environmentObject(commandLine)
                 .onAppear { updates.check(UpdateChannel(rawValue: updateChannel) ?? .off) }
         }
         .windowResizability(.contentSize)

@@ -44,3 +44,12 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     to investigate: a custom `.VolumeIcon.icns` written to the volume (needs write access, so not
     possible on the read-only default), or an icon the driver supplies for its disks. Decide
     which is feasible under DriverKit before building either.
+13. **Telemetry the dashboard cannot show yet** [protocol, needs hardware]. Temperature, fan
+    speed, uptime, power state, hot data cache, disk pack status and data integrity have no
+    documented page (see the dashboard table in [03-coverage.md](03-coverage.md)). Depends on
+    item 1. Also decode what is already polled but unused: the device clock (settings page), the
+    protocol version and the config page's LUN limits, and work out the slot record's "short
+    identity" field and trailing u32 from a hardware dump.
+14. **Events and performance history** [app]. The app keeps no history. Record status changes
+    (the same transitions that post notifications) into an Events tab, and sample the driver's
+    throughput and latency counters into a Performance tab with a chart. No protocol work.
