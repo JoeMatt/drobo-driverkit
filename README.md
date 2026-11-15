@@ -54,6 +54,7 @@ drobo get percent           # one bare value; `drobo keys` lists them
 drobo all --json            # for dashboards
 drobo --watch 5             # redraw every 5 seconds
 drobo diagnostics > d.json  # raw driver state for a bug report, serial and name removed
+drobo metrics               # Prometheus text format, for Grafana-style monitoring
 ```
 
 The exit status is 0 when healthy, 1 for a warning or a rebuild, 2 when the Drobo needs
@@ -67,6 +68,12 @@ drive changes state, the driver reports I/O errors, or the Drobo disconnects, st
 comes back. Settings also takes an optional webhook address: each alert is then posted there as a
 small JSON message (`title`, `body`, `level`, `time`, plus `text` and `content` for chat
 services), so it reaches you when nobody is at the Mac.
+
+Every event is also written to the macOS log, so Console and other log tools can report on it:
+
+```bash
+log show --last 1d --predicate 'subsystem == "com.joemattiello.DroboDriverKit" AND category == "events"'
+```
 
 **Save Diagnostics…** (app menu, or the Advanced tab) writes what the driver publishes, including
 the raw status pages, to a JSON file. The Drobo's serial number and name are overwritten; drive

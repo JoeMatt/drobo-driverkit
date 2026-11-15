@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 /// One line in the Events tab.
 struct DroboEvent: Codable, Identifiable {
@@ -20,6 +21,10 @@ final class EventLog: ObservableObject {
     /// Called once per poll with the events that poll produced, for notifications and webhooks.
     var onChanges: (([DroboEvent]) -> Void)?
 
+    /// Every event also goes to the macOS log, so Console and `log show` can report on it:
+    ///   log show --last 1d --predicate 'subsystem == "com.joemattiello.DroboDriverKit" AND category == "events"'
+    private static let systemLog = Logger(subsystem: "com.joemattiello.DroboDriverKit", category: "events")
+
     private let persist: Bool
     private let limit = 1000
     private var primed = false
@@ -40,6 +45,14 @@ final class EventLog: ObservableObject {
 
     func add(_ level: DroboEvent.Level, _ title: String, _ detail: String = "", date: Date = Date()) {
         let event = DroboEvent(date: date, level: level, title: title, detail: detail)
+        if persist {
+            let line = detail.isEmpty ? title : "\(title): \(detail)"
+            switch level {
+            case .critical: Self.systemLog.fault("\(line, privacy: .public)")
+            case .warning: Self.systemLog.error("\(line, privacy: .public)")
+            case .good, .info: Self.systemLog.notice("\(line, privacy: .public)")
+            }
+        }
         batch?.append(event)
         events.insert(event, at: 0)
         if events.count > limit { events.removeLast(events.count - limit) }

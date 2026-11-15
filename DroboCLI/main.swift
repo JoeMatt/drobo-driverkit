@@ -21,6 +21,7 @@ commands
   get <key>              one bare value, for scripts and status lines
   keys                   list the keys `get` accepts
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
+  metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
 
 options
   --json                 machine-readable output (status, device, drives, volumes, all)
@@ -197,6 +198,63 @@ func printJSON(_ value: Any) {
     print(String(decoding: data, as: UTF8.self))
 }
 
+// MARK: Metrics
+
+/// Prometheus exposition format. Always exits 0: `drobo_up` and `drobo_ready` carry the state.
+func metricsText(_ state: State) -> String {
+    let snapshot = state.snapshot
+    var lines: [String] = []
+    func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: " ")
+    }
+    func metric(_ name: String, _ help: String, _ type: String = "gauge", _ samples: [(labels: [(String, String)], value: String)]) {
+        guard !samples.isEmpty else { return }
+        lines.append("# HELP \(name) \(help)")
+        lines.append("# TYPE \(name) \(type)")
+        for sample in samples {
+            let labels = sample.labels.map { "\($0.0)=\"\(escape($0.1))\"" }.joined(separator: ",")
+            lines.append(labels.isEmpty ? "\(name) \(sample.value)" : "\(name){\(labels)} \(sample.value)")
+        }
+    }
+    func one(_ value: String) -> [(labels: [(String, String)], value: String)] { [([], value)] }
+
+    metric("drobo_up", "1 if the driver is attached to a Drobo.", "gauge", one(snapshot.driverPresent ? "1" : "0"))
+    metric("drobo_ready", "1 if the Drobo has finished starting.", "gauge", one(snapshot.ready ? "1" : "0"))
+    guard snapshot.ready else { return lines.joined(separator: "\n") }
+
+    metric("drobo_health", "0 healthy, 1 warning or rebuilding, 2 needs attention.", "gauge", one("\(state.health.code)"))
+    metric("drobo_status_flags", "Raw status flags from the Drobo.", "gauge", one("\(snapshot.statusFlags ?? 0)"))
+    metric("drobo_rebuilding", "1 while data protection is in progress.", "gauge", one(snapshot.isRebuilding ? "1" : "0"))
+    metric("drobo_rebuild_blocks_left", "Blocks left to rebuild.", "gauge", one("\(snapshot.relayoutCount)"))
+    if let capacity = state.capacity {
+        metric("drobo_capacity_bytes", "Protected capacity by kind.", "gauge", [
+            ([("kind", "used")], "\(capacity.used)"),
+            ([("kind", "free")], "\(capacity.total - capacity.used)"),
+            ([("kind", "total")], "\(capacity.total)"),
+        ])
+    }
+    let filled = snapshot.slots.filter { !$0.isEmpty }
+    metric("drobo_bays", "Number of drive bays.", "gauge", one("\(snapshot.slots.count)"))
+    metric("drobo_drive_healthy", "1 if the drive in this bay reports healthy.", "gauge",
+           filled.map { ([("bay", bayLabel($0)), ("model", $0.model), ("status", $0.statusText.lowercased())], $0.statusCode & 0x0F == 3 ? "1" : "0") })
+    metric("drobo_drive_size_bytes", "Physical size of the drive in this bay.", "gauge",
+           filled.map { ([("bay", bayLabel($0))], "\($0.physicalBytes)") })
+    metric("drobo_drive_temperature_celsius", "Drive temperature (needs drive details turned on in the app).", "gauge",
+           filled.compactMap { slot in slot.temperature.map { ([("bay", bayLabel(slot))], "\($0)") } })
+    metric("drobo_drive_errors", "Drive error count as the Drobo reports it (needs drive details turned on).", "gauge",
+           filled.compactMap { slot in slot.errorCount.map { ([("bay", bayLabel(slot))], "\($0)") } })
+    metric("drobo_volume_mounted", "1 if a volume on this unit is mounted.", "gauge",
+           state.luns.map { ([("unit", "\($0.id)"), ("name", $0.volumeNames.joined(separator: ", "))], $0.isMounted ? "1" : "0") })
+    metric("drobo_volume_writable", "1 if writing is allowed on this unit.", "gauge",
+           state.luns.map { ([("unit", "\($0.id)")], $0.writable ? "1" : "0") })
+    metric("drobo_driver_reads_total", "Read requests since the driver started.", "counter", one("\(snapshot.reads)"))
+    metric("drobo_driver_writes_total", "Write requests since the driver started.", "counter", one("\(snapshot.writes)"))
+    metric("drobo_driver_read_bytes_total", "Bytes read since the driver started.", "counter", one("\(snapshot.readBytes)"))
+    metric("drobo_driver_written_bytes_total", "Bytes written since the driver started.", "counter", one("\(snapshot.writeBytes)"))
+    metric("drobo_driver_io_errors_total", "I/O errors since the driver started.", "counter", one("\(snapshot.errors)"))
+    return lines.joined(separator: "\n")
+}
+
 // MARK: get
 
 let keys = """
@@ -354,6 +412,9 @@ func run() -> Int32 {
         print(result)
     case "keys":
         print(keys)
+        return 0
+    case "metrics":
+        print(metricsText(state))
         return 0
     case "diagnostics":
         // The command usually runs through a link in /usr/local/bin; resolve it to find the app.
