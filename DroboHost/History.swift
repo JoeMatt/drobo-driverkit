@@ -69,6 +69,23 @@ final class EventLog: ObservableObject {
         if !produced.isEmpty { onChanges?(produced) }
     }
 
+    /// The conditions already in force when the Drobo comes (back) up. Without this they would
+    /// never be logged, because only changes between two ready polls are compared.
+    private func recordStanding(_ snapshot: DroboSnapshot) {
+        let flags = snapshot.statusFlags ?? 0
+        for (bit, text) in DroboSnapshot.statusTable where flags & bit != 0 && !text.hasPrefix("Status bit") {
+            add(bit & 0x0132 != 0 ? .critical : .warning, text, "Already active when the Drobo came up.")
+        }
+        // One line per drive state rather than one per bay: a rebuild marks every bay at once.
+        let unhealthy = snapshot.slots.filter { !$0.isEmpty && $0.statusCode & 0x0F != 3 }
+        for status in Set(unhealthy.map(\.statusText)).sorted() {
+            let bays = unhealthy.filter { $0.statusText == status }.map { $0.id < 8 ? "\($0.id + 1)" : "SSD" }
+            let failed = status.hasPrefix("Failed")
+            add(failed ? .critical : .warning, "\(bays.count == 1 ? "Bay" : "Bays") \(bays.joined(separator: ", ")): \(status)",
+                "Already in this state when the Drobo came up.")
+        }
+    }
+
     private func compare(previous: DroboSnapshot, latest: DroboSnapshot, previousLUNs: [DroboLUN], latestLUNs: [DroboLUN]) {
         let name = latest.name.isEmpty ? "Drobo" : latest.name
         guard primed else {
@@ -90,6 +107,7 @@ final class EventLog: ObservableObject {
         if previous.ready != latest.ready, latest.driverPresent {
             if latest.ready {
                 add(.good, "\(name) is ready")
+                recordStanding(latest)
             } else if previous.driverPresent {
                 add(.warning, "\(name) stopped responding", "The Drobo restarted or is starting up again.")
             }
