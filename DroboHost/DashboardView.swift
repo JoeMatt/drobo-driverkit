@@ -452,9 +452,13 @@ struct ContentView: View {
                     if !slot.interface.isEmpty { fact("Interface", slot.interface) }
                     if slot.managedBytes > 0 { fact("Managed by Drobo", DashboardModel.bytes(slot.managedBytes)) }
                 }
-                if slot.temperature != nil || slot.errorCount != nil || !slot.serial.isEmpty {
+                if slot.errorCount != nil || !slot.serial.isEmpty {
                     HStack(spacing: 14) {
-                        if let temperature = slot.temperature, temperature > 0 { fact("Temp", "\(temperature) °C") }
+                        if slot.isSolidState { fact("Type", "SSD") } else if let rpm = slot.rpm { fact("Speed", "\(rpm) rpm") }
+                        if let life = slot.lifeRemaining, slot.isSolidState || life < 100 {
+                            fact("Life", "\(life)%", tint: life < 20 ? Theme.amber : nil)
+                        }
+                        if let temperature = slot.temperature { fact("Temp", "\(temperature) °C") }
                         if let errors = slot.errorCount { fact("Errors", "\(errors)", tint: errors > 0 ? Theme.amber : nil) }
                         if !slot.firmwareRevision.isEmpty { fact("Firmware", slot.firmwareRevision) }
                         if !slot.serial.isEmpty { fact("Serial", slot.serial) }

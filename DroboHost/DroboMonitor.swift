@@ -26,11 +26,18 @@ struct DroboSlot: Identifiable {
     var errorCount: Int?
     var firmwareRevision = ""
     var serial = ""
-    /// Raw values whose encodings are not known yet; kept for diagnostics, not shown.
-    var diskState: UInt32?
-    var diskType: Int?
+    /// Percent of rated life left. Observed on the 8D: 100 for hard disks, 99 for an SSD.
     var lifeRemaining: Int?
+    /// Raw rotation field. Observed on the 8D: 1 for an SSD, otherwise rpm / 200
+    /// (27 for 5400 rpm drives, 36 for 7200 rpm drives).
     var rotationalSpeed: Int?
+    /// 0 for hard disks and 2 for the SSD on the 8D.
+    var diskType: Int?
+    /// Raw value whose encoding is not known yet; kept for diagnostics, not shown.
+    var diskState: UInt32?
+
+    var isSolidState: Bool { rotationalSpeed == 1 || diskType == 2 }
+    var rpm: Int? { rotationalSpeed.flatMap { $0 > 1 ? $0 * 200 : nil } }
 
     var isEmpty: Bool { statusCode == 0x80 }
 
@@ -328,7 +335,8 @@ enum DroboMonitor {
                 snapshot.slots[index].errorCount = Int(be16(page, offset + 2))
                 snapshot.slots[index].diskState = be32(page, offset + 4)
                 snapshot.slots[index].diskType = Int(page[offset + 8])
-                snapshot.slots[index].temperature = Int(page[offset + 9])
+                // The 8D reports 0 here for every drive, so 0 means "not reported".
+                snapshot.slots[index].temperature = page[offset + 9] == 0 ? nil : Int(page[offset + 9])
                 snapshot.slots[index].lifeRemaining = Int(page[offset + 10])
                 snapshot.slots[index].rotationalSpeed = Int(page[offset + 11])
                 snapshot.slots[index].firmwareRevision = string(page, offset + 0x38, 12)

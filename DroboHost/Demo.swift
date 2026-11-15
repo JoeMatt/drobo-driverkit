@@ -60,6 +60,9 @@ enum Demo {
             var slot = DroboSlot(id: bay, physicalBytes: size, statusCode: code, model: models[bay],
                                  managedBytes: size - 12_000_000_000, interface: "SATA")
             slot.temperature = 33 + (bay * 7) % 9
+            slot.lifeRemaining = 100
+            slot.rotationalSpeed = bay < 4 ? 27 : 36
+            slot.diskType = 0
             slot.errorCount = rebuilding && bay == 2 ? 14 : 0
             slot.firmwareRevision = bay < 2 ? "81.00A81" : (bay < 4 ? "SC61" : "82.00A82")
             slot.serial = "DEMO\(1000 + bay * 137)"

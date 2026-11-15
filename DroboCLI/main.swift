@@ -144,10 +144,15 @@ func deviceText(_ state: State) -> String {
 func drivesText(_ slots: [DroboSlot]) -> String {
     guard !slots.isEmpty else { return "No bay information." }
     // Temperature and errors appear only when the optional drive page is on (see the app).
-    let detailed = slots.contains { $0.temperature != nil }
-    return table([["BAY", "SIZE", "STATUS"] + (detailed ? ["TEMP", "ERRORS"] : []) + ["MODEL"]] + slots.map { slot in
+    let detailed = slots.contains { $0.errorCount != nil }
+    let warm = slots.contains { $0.temperature != nil }
+    func speed(_ slot: DroboSlot) -> String { slot.isSolidState ? "SSD" : (slot.rpm.map { "\($0)" } ?? "-") }
+    let header = ["BAY", "SIZE", "STATUS"] + (detailed ? ["RPM", "LIFE", "ERRORS"] + (warm ? ["TEMP"] : []) + ["FIRMWARE"] : []) + ["MODEL"]
+    return table([header] + slots.map { slot in
         [bayLabel(slot), slot.isEmpty ? "-" : human(slot.physicalBytes), slot.statusText]
-            + (detailed ? [slot.temperature.map { "\($0) C" } ?? "-", slot.errorCount.map { "\($0)" } ?? "-"] : [])
+            + (detailed ? [speed(slot), slot.lifeRemaining.map { "\($0)%" } ?? "-", slot.errorCount.map { "\($0)" } ?? "-"]
+                + (warm ? [slot.temperature.map { "\($0) C" } ?? "-"] : [])
+                + [slot.firmwareRevision.isEmpty ? "-" : slot.firmwareRevision] : [])
             + [slot.isEmpty ? "-" : slot.model]
     })
 }
@@ -167,6 +172,9 @@ func driveJSON(_ slot: DroboSlot) -> [String: Any] {
                                 "model": slot.model, "status": slot.statusText]
     if let temperature = slot.temperature { drive["temperatureC"] = temperature }
     if let errors = slot.errorCount { drive["errorCount"] = errors }
+    if let life = slot.lifeRemaining { drive["lifeRemainingPercent"] = life }
+    if let rpm = slot.rpm { drive["rpm"] = rpm }
+    if slot.errorCount != nil { drive["solidState"] = slot.isSolidState }
     if !slot.firmwareRevision.isEmpty { drive["firmware"] = slot.firmwareRevision }
     if !slot.serial.isEmpty { drive["serial"] = slot.serial }
     return drive
@@ -257,6 +265,8 @@ func metricsText(_ state: State) -> String {
            filled.compactMap { slot in slot.temperature.map { ([("bay", bayLabel(slot))], "\($0)") } })
     metric("drobo_drive_errors", "Drive error count as the Drobo reports it (needs drive details turned on).", "gauge",
            filled.compactMap { slot in slot.errorCount.map { ([("bay", bayLabel(slot))], "\($0)") } })
+    metric("drobo_drive_life_remaining_percent", "Rated life left (needs drive details turned on).", "gauge",
+           filled.compactMap { slot in slot.lifeRemaining.map { ([("bay", bayLabel(slot))], "\($0)") } })
     metric("drobo_volume_mounted", "1 if a volume on this unit is mounted.", "gauge",
            state.luns.map { ([("unit", "\($0.id)"), ("name", $0.volumeNames.joined(separator: ", "))], $0.isMounted ? "1" : "0") })
     metric("drobo_volume_writable", "1 if writing is allowed on this unit.", "gauge",
@@ -285,7 +295,7 @@ drives  bays                 drives installed, bays in total
 alerts                       one per line
 temperature  uptime  fans    enclosure, when drive and system details are on in the app
 drive.<bay>.status|size|size-human|model          bay is 1-8 or ssd
-drive.<bay>.temperature|errors|firmware|serial    only when drive details are on in the app
+drive.<bay>.errors|life|rpm|firmware|serial|temperature   only when details are on in the app
 volume.<name|unit>.mounted|size|size-human|access|disk|name
 """
 
@@ -300,6 +310,8 @@ func value(for key: String, in state: State) -> String? {
         case "model": return slot.model
         case "temperature": return slot.temperature.map { "\($0)" }
         case "errors": return slot.errorCount.map { "\($0)" }
+        case "life": return slot.lifeRemaining.map { "\($0)" }
+        case "rpm": return slot.isSolidState ? "0" : slot.rpm.map { "\($0)" }
         case "firmware": return slot.firmwareRevision.isEmpty ? nil : slot.firmwareRevision
         case "serial": return slot.serial.isEmpty ? nil : slot.serial
         default: return nil

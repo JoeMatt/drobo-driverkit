@@ -100,8 +100,9 @@ publishes its raw bytes under `DroboHealth`.
 | Per-drive interface | Slot page `03`, last 8 bytes of the identity field | decoded; shown (Drives) |
 | Per-drive managed capacity | Slot page `03`, second u64 of the record | decoded; shown (Drives) |
 | Per-drive "short identity" and trailing u32 | Slot page `03` | settled: a repeat of the model's first 16 bytes, and zero (protocol notes 11.9) |
-| Per-drive temperature, error count, firmware revision, serial | Slot page 2, sub-page `35` (protocol notes 11.9) | unverified: opt-in since v0.25.0 (Advanced → Read drive details), shown on Drives; never tried on hardware |
-| Per-drive SSD life remaining, rotational speed, disk state and type | same page | decoded into diagnostics only; encodings unknown |
+| Per-drive error count, firmware revision, serial, rotation speed, SSD or hard disk, life remaining | Slot page 2, sub-page `35` (protocol notes 11.9, 11.12) | **verified** on the 8D with v0.25.0; opt-in (Advanced → Read drive and system details), shown on Drives |
+| Per-drive temperature | same page | the 8D reports 0 for every drive (11.12); shown only if a unit reports it |
+| Per-drive disk state | same page | in diagnostics only; encoding unknown |
 | Name, serial | Settings page `05`, `DroboStatus` | shown |
 | Firmware version, build date, platform | Firmware page `08` | version and build shown; platform decoded only |
 | Device clock | Settings page `05` (UTC u32, offset u16) | polled, not decoded |

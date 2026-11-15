@@ -806,6 +806,27 @@ of that same kext, and the service also copies a `.VolumeIcon.icns` onto volumes
 project's app writes its own `.VolumeIcon.icns` (through `NSWorkspace.setIcon`), only on
 volumes with Allow writes on and only when asked. **[obs]**
 
+### 11.12 Page `35` on the 8D (driver v0.25.0, 2026-11-15)
+
+First hardware result for the optional pages: the 8D (firmware 4.2.3, protocol `00 0B`),
+rebuilding at the time, answers sub-page `35` with SRB response 1, status 0 and 984 bytes:
+header `7A 35 03 D4 D8 03 01 00 09 6C 00 00` (nine slots, record size `0x6C`), then nine
+records laid out as in 11.9. Polling continued with zero errors. What the records showed:
+
+- Slot id and status match page `03`. Error count was 0 for every drive.
+- **Temperature (`0x09`) is 0 for every drive**: this firmware does not report it here. The app
+  treats 0 as "not reported".
+- **Life remaining (`0x0A`)** is a percentage: 100 for the eight hard disks, 99 for the SSD.
+- **Rotational speed (`0x0B`)** is rpm / 200 for hard disks (27 on the 5400 rpm models, 36 on
+  the 7200 rpm models) and 1 for the SSD.
+- **Disk type (`0x08`)** was 0 for hard disks and 2 for the SSD.
+- Disk state (`0x04`) was `0x00000010` for hard disks and `0x00000020` for the SSD while
+  rebuilding; meaning still unknown.
+- Model (padded to 44, ending in the interface name), firmware revision and serial number are
+  filled in. Total capacity matches page `03`; the managed-capacity field was 0.
+
+Pages `33`, `34`, `36` and `37` need driver v0.26.0 and have not been tried.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
