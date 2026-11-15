@@ -143,18 +143,36 @@ func deviceText(_ state: State) -> String {
 
 func drivesText(_ slots: [DroboSlot]) -> String {
     guard !slots.isEmpty else { return "No bay information." }
-    // Temperature and errors appear only when the optional drive page is on (see the app).
+    // Speed, life, errors and firmware appear only when drive details are on (see the app).
     let detailed = slots.contains { $0.errorCount != nil }
     let warm = slots.contains { $0.temperature != nil }
-    func speed(_ slot: DroboSlot) -> String { slot.isSolidState ? "SSD" : (slot.rpm.map { "\($0)" } ?? "-") }
-    let header = ["BAY", "SIZE", "STATUS"] + (detailed ? ["RPM", "LIFE", "ERRORS"] + (warm ? ["TEMP"] : []) + ["FIRMWARE"] : []) + ["MODEL"]
-    return table([header] + slots.map { slot in
-        [bayLabel(slot), slot.isEmpty ? "-" : human(slot.physicalBytes), slot.statusText]
-            + (detailed ? [speed(slot), slot.lifeRemaining.map { "\($0)%" } ?? "-", slot.errorCount.map { "\($0)" } ?? "-"]
-                + (warm ? [slot.temperature.map { "\($0) C" } ?? "-"] : [])
-                + [slot.firmwareRevision.isEmpty ? "-" : slot.firmwareRevision] : [])
-            + [slot.isEmpty ? "-" : slot.model]
-    })
+
+    var header: [String] = ["BAY", "SIZE", "STATUS"]
+    if detailed {
+        header += ["RPM", "LIFE", "ERRORS"]
+        if warm { header.append("TEMP") }
+        header.append("FIRMWARE")
+    }
+    header.append("MODEL")
+
+    var rows: [[String]] = [header]
+    for slot in slots {
+        var row: [String] = [bayLabel(slot), slot.isEmpty ? "-" : human(slot.physicalBytes), slot.statusText]
+        if detailed {
+            let speed: String = slot.isSolidState ? "SSD" : (slot.rpm.map { String($0) } ?? "-")
+            let life: String = slot.lifeRemaining.map { "\($0)%" } ?? "-"
+            let errors: String = slot.errorCount.map { String($0) } ?? "-"
+            row += [speed, life, errors]
+            if warm {
+                let temperature: String = slot.temperature.map { "\($0) C" } ?? "-"
+                row.append(temperature)
+            }
+            row.append(slot.firmwareRevision.isEmpty ? "-" : slot.firmwareRevision)
+        }
+        row.append(slot.isEmpty ? "-" : slot.model)
+        rows.append(row)
+    }
+    return table(rows)
 }
 
 func volumesText(_ luns: [DroboLUN]) -> String {
