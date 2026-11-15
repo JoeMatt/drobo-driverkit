@@ -120,10 +120,15 @@ final class EventLog: ObservableObject {
         if previous.ready != latest.ready, latest.driverPresent {
             if latest.ready {
                 add(.good, "\(name) is ready")
-                recordStanding(latest)
             } else if previous.driverPresent {
                 add(.warning, "\(name) stopped responding", "The Drobo restarted or is starting up again.")
             }
+        }
+        // The status pages arrive a few seconds after the Drobo reports ready, so "what is already
+        // wrong" is recorded when the first status is in, not at the ready transition itself.
+        if latest.ready, latest.statusFlags != nil, previous.statusFlags == nil || !previous.ready {
+            recordStanding(latest)
+            return
         }
         guard previous.ready, latest.ready else { return }
 
