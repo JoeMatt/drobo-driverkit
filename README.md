@@ -24,6 +24,8 @@ for the direct-attached Thunderbolt units.
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
 | Intel Macs | Not supported; use Drobo's original driver there |
+| Menu bar item, background monitoring, notifications, open at login | In the app (Settings) |
+| Update checks (release or nightly channel) | Tells you when a newer version exists; installing it still means rebuilding |
 | A ready-to-run download | **Not available yet**, see below |
 
 In short: today this is a way to **get your data off** a Drobo 8D using a current Mac, and to
@@ -183,6 +185,9 @@ read-only, add a second personality with `IOPCIMatch` `0x55704452` to `DroboDriv
 and open an issue with what happens.
 
 ## For developers
+
+Contributing, including with AI coding agents: start with [AGENTS.md](AGENTS.md). Feature
+coverage against the original Drobo software is tracked in [docs/03-coverage.md](docs/03-coverage.md).
 
 - [Protocol notes](docs/01-protocol-reverse-engineering.md): BAR layout, the `DroboPort`
   shared-memory structure, the self-describing doorbell tables, request and response formats,

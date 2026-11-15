@@ -4,13 +4,162 @@ import os.log
 
 /// Host app: activates the driver extension and is the Drobo's dashboard.
 /// The app must be run from /Applications for activation to succeed with SIP enabled.
+///
+/// With the menu bar item on, the app keeps running after its window is closed, so it works as
+/// a background agent: it keeps polling the Drobo, shows its state in the menu bar and posts
+/// notifications when that state changes.
 @main
 struct DroboHostApp: App {
+    @StateObject private var dashboard = DashboardModel()
+    @StateObject private var updates = UpdateChecker()
+    @AppStorage("showMenuBarItem") private var showMenuBarItem = true
+    @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
+
     var body: some Scene {
-        WindowGroup("Drobo") {
+        Window("Drobo", id: "main") {
             ContentView()
+                .environmentObject(dashboard)
+                .environmentObject(updates)
+                .onAppear { updates.check(UpdateChannel(rawValue: updateChannel) ?? .off) }
         }
         .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Drobo DriverKit") { About.show() }
+            }
+        }
+
+        MenuBarExtra(isInserted: $showMenuBarItem) {
+            MenuBarContent()
+                .environmentObject(dashboard)
+                .environmentObject(updates)
+        } label: {
+            Image(systemName: dashboard.menuBarSymbol)
+        }
+
+        Settings {
+            PreferencesView()
+                .environmentObject(dashboard)
+                .environmentObject(updates)
+        }
+    }
+}
+
+/// Author and project links, used by the About panel and the dashboard footer.
+enum About {
+    static let author = "Joseph Mattiello"
+    static let profileURL = URL(string: "https://github.com/JoeMatt")!
+    static let projectURL = URL(string: "https://github.com/JoeMatt/drobo-driverkit")!
+
+    static func show() {
+        let credits = NSMutableAttributedString()
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let base: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: style,
+        ]
+        func add(_ text: String, link: URL? = nil) {
+            var attributes = base
+            if let link { attributes[.link] = link }
+            credits.append(NSAttributedString(string: text, attributes: attributes))
+        }
+        add("A DriverKit driver and dashboard for the Drobo 8D.\nCreated by ")
+        add(author, link: profileURL)
+        add("\n\n")
+        add("github.com/JoeMatt/drobo-driverkit", link: projectURL)
+        add("\n\nNot affiliated with Drobo, Inc. MIT licensed.")
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Drobo DriverKit",
+            .credits: credits,
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 \(author)",
+        ])
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// The drop-down under the menu bar icon.
+struct MenuBarContent: View {
+    @EnvironmentObject private var dashboard: DashboardModel
+    @EnvironmentObject private var updates: UpdateChecker
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        let snapshot = dashboard.snapshot
+        Text(dashboard.summaryLine)
+        if snapshot.ready, let used = snapshot.usedBytes, let free = snapshot.freeBytes {
+            Text("\(DashboardModel.bytes(used)) used · \(DashboardModel.bytes(free)) free")
+        }
+        if snapshot.isRebuilding, snapshot.relayoutCount > 0 {
+            Text("Rebuilding: \(snapshot.relayoutCount) blocks left")
+        }
+        Divider()
+        ForEach(dashboard.luns) { lun in
+            Button((lun.isMounted ? "Unmount " : "Mount ") + (lun.volumeNames.first ?? DashboardModel.bytes(lun.bytes))) {
+                dashboard.setMounted(!lun.isMounted, lun: lun)
+            }
+            .disabled(lun.bsdName == nil || dashboard.busy)
+        }
+        Button("Eject All") { dashboard.ejectAll() }.disabled(dashboard.volumes.isEmpty || dashboard.busy)
+        Divider()
+        if let url = updates.updateURL {
+            Button("Update Available…") { NSWorkspace.shared.open(url) }
+        }
+        Button("Open Drobo Dashboard") {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        SettingsLink { Text("Settings…") }
+        Button("About Drobo DriverKit") { About.show() }
+        Divider()
+        Button("Quit") { NSApp.terminate(nil) }
+    }
+}
+
+/// App preferences (not the Drobo's own settings).
+struct PreferencesView: View {
+    @EnvironmentObject private var dashboard: DashboardModel
+    @EnvironmentObject private var updates: UpdateChecker
+    @AppStorage("showMenuBarItem") private var showMenuBarItem = true
+    @AppStorage("notificationsEnabled") private var notificationsEnabled = false
+    @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
+    @State private var launchAtLogin = LoginItem.isEnabled
+    @State private var loginError = ""
+
+    var body: some View {
+        Form {
+            Toggle("Show Drobo in the menu bar", isOn: $showMenuBarItem)
+            Text("With this on, the app keeps running in the background after its window is closed.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Open at login", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { _, enabled in
+                    loginError = LoginItem.set(enabled) ?? ""
+                    launchAtLogin = LoginItem.isEnabled
+                }
+            if !loginError.isEmpty { Text(loginError).font(.caption).foregroundStyle(.red) }
+            Toggle("Notify me when the Drobo's status changes", isOn: $notificationsEnabled)
+                .onChange(of: notificationsEnabled) { _, enabled in
+                    if enabled { Notifier.requestPermission() }
+                }
+            Picker("Check for updates", selection: $updateChannel) {
+                ForEach(UpdateChannel.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+            .onChange(of: updateChannel) { _, channel in updates.check(UpdateChannel(rawValue: channel) ?? .off) }
+            HStack {
+                Button("Check Now") { updates.check(UpdateChannel(rawValue: updateChannel) ?? .off) }
+                    .disabled(updateChannel == UpdateChannel.off.rawValue)
+                if let url = updates.updateURL {
+                    Button("View Update") { NSWorkspace.shared.open(url) }
+                }
+            }
+            Text(updates.status.isEmpty ? "Version \(UpdateChecker.version)" : updates.status)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Updates are not installed automatically yet: each copy of this app is built and signed by its owner. To update, pull the new source and rebuild.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(width: 460)
     }
 }
 
@@ -35,8 +184,44 @@ final class DashboardModel: ObservableObject {
     private var rebuildStart: (date: Date, count: UInt32)?
     private var writableSeeded = false
     private var awaitingCommand: (count: UInt64, name: String)?
+    private var lastFlags: UInt32?
+    private var wasRebuilding = false
+
+    init() { start() }
+
+    /// One line for the menu bar drop-down.
+    var summaryLine: String {
+        if !snapshot.driverPresent { return "Drobo: not connected" }
+        if !snapshot.ready { return "Drobo: starting…" }
+        let name = snapshot.name.isEmpty ? "Drobo" : snapshot.name
+        let alerts = snapshot.statusLines.filter { !$0.hasPrefix("Status bit") }
+        return "\(name): " + (alerts.first ?? "Healthy")
+    }
+
+    /// Menu bar icon: plain when healthy, badged when something needs attention.
+    var menuBarSymbol: String {
+        guard snapshot.ready, let flags = snapshot.statusFlags else { return "externaldrive" }
+        if flags & 0x0132 != 0 { return "externaldrive.badge.xmark" }
+        if snapshot.isRebuilding || flags & 0x00C4 != 0 { return "externaldrive.badge.exclamationmark" }
+        return "externaldrive.fill"
+    }
+
+    private func notifyChanges(_ latest: DroboSnapshot) {
+        guard UserDefaults.standard.bool(forKey: "notificationsEnabled"), let flags = latest.statusFlags else { return }
+        defer { lastFlags = flags; wasRebuilding = latest.isRebuilding }
+        guard let previous = lastFlags else { return }
+        let added = flags & ~previous
+        let name = latest.name.isEmpty ? "Drobo" : latest.name
+        if added & 0x0132 != 0 || added & 0x0040 != 0 {
+            let lines = latest.statusLines.filter { !$0.hasPrefix("Status bit") }
+            Notifier.post(title: "\(name) needs attention", body: lines.joined(separator: ". "))
+        } else if wasRebuilding, !latest.isRebuilding {
+            Notifier.post(title: "\(name) finished rebuilding", body: "Data protection is complete.")
+        }
+    }
 
     func start() {
+        guard timer == nil else { return }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
     }
@@ -55,12 +240,16 @@ final class DashboardModel: ObservableObject {
         lastWrite = latest.writeBytes
         lastSample = now
 
-        // Rebuild estimate from how fast the Drobo's "blocks left" counter falls.
+        notifyChanges(latest)
+
+        // Rebuild estimate from how fast the Drobo's "blocks left" counter falls. The counter
+        // can also rise while the Drobo is still working out how much there is to do, which
+        // restarts the estimate; and it needs several minutes of samples to mean anything.
         if latest.relayoutCount > 0 {
             if let start = rebuildStart, start.count >= latest.relayoutCount {
                 let done = Double(start.count - latest.relayoutCount)
                 let seconds = now.timeIntervalSince(start.date)
-                if done > 0, seconds > 60 {
+                if done >= 20, seconds > 300 {
                     rebuildETA = "about " + Self.duration(Double(latest.relayoutCount) / (done / seconds)) + " left"
                 } else {
                     rebuildETA = "estimating time…"
@@ -227,7 +416,8 @@ struct Card<Content: View>: View {
 
 struct ContentView: View {
     @StateObject private var model = ExtensionModel()
-    @StateObject private var dashboard = DashboardModel()
+    @EnvironmentObject private var dashboard: DashboardModel
+    @EnvironmentObject private var updates: UpdateChecker
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
@@ -259,19 +449,28 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if let url = updates.updateURL {
+                HStack {
+                    Label(updates.status, systemImage: "arrow.down.circle").font(.callout)
+                    Button("View") { NSWorkspace.shared.open(url) }.controlSize(.small)
+                }
+            }
             if !dashboard.message.isEmpty {
                 Text(dashboard.message).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             driver
+            HStack(spacing: 4) {
+                Text("Drobo DriverKit \(UpdateChecker.version) by")
+                Link(About.author, destination: About.profileURL)
+                Text("·")
+                Link("Project on GitHub", destination: About.projectURL)
+            }
+            .font(.caption).foregroundStyle(.secondary)
         }
         .padding(18)
         .frame(width: 760, alignment: .leading)
-        .onAppear {
-            dashboard.start()
-            showDriver = !dashboard.snapshot.driverPresent
-        }
-        .onDisappear { dashboard.stop() }
+        .onAppear { showDriver = !dashboard.snapshot.driverPresent }
         .alert("Rename Drobo", isPresented: $showRename) {
             TextField("Name", text: $newName)
             Button("Rename") { dashboard.rename(to: newName) }
