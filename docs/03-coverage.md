@@ -4,7 +4,7 @@ What the original Drobo software did, and where this project stands. Status valu
 **verified** (seen working on a Drobo 8D), **unverified** (implemented, compiles, not yet run
 on hardware), **partial**, **no**.
 
-Last updated for driver v0.23.0.
+Last updated for driver v0.24.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -13,7 +13,7 @@ Every externally visible function of the kext, from its symbol table.
 | Kext capability | Kext code | Here | Status |
 |---|---|---|---|
 | PCI match `4452:3844` (8D) | `Info.plist` | `IOPCIMatch` | verified |
-| PCI match `4452:5570` (other Thunderbolt models) | `Info.plist` | not matched | no |
+| PCI match `4452:5570` (other Thunderbolt models) | `Info.plist` | second `IOPCIMatch` personality (v0.24.0) | unverified: no such unit has been tried |
 | BAR mapping, bus master, MSI | `InitializeController`, `CreateDeviceInterrupt` | `BringUp`, `Start` | verified |
 | HOST_BAR_READY handshake | `TriggerHostBarInterrupt` | `HostBarReady` | verified |
 | DroboPort parsing, capabilities, LUN table | `Channel::init` | `BringUp` | verified |

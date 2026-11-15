@@ -128,10 +128,11 @@ struct ContentView: View {
         return HStack(alignment: .bottom, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    Eyebrow(text: "Drobo 8D · Thunderbolt")
+                    // Nine slots (eight bays and the mSATA bay) is the 8D; anything else is another model.
+                    Eyebrow(text: (snapshot.slots.isEmpty || snapshot.slots.count == 9 ? "Drobo 8D" : "Drobo") + " · Thunderbolt")
                     if Demo.scenario != nil { Eyebrow(text: "Demo data", tint: Theme.amber) }
                 }
-                Text(snapshot.name.isEmpty ? "Drobo 8D" : snapshot.name)
+                Text(snapshot.name.isEmpty ? "Drobo" : snapshot.name)
                     .font(Theme.display(30, .semibold))
                     .foregroundStyle(Theme.primary)
                     .lineLimit(1)

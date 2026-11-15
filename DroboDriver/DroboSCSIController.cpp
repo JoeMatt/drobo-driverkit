@@ -3,6 +3,11 @@
 //
 //  Read-only driver for the Drobo 8D.
 //
+//  It also matches PCI 4452:5570, the ID the original kext used for the other Thunderbolt
+//  Drobos with this same code. That path is untested: nothing below is adapted for it, and
+//  bring-up stops ("interrupt-table-mismatch", "unsupported-interface", ...) if the device does
+//  not describe itself the way the 8D does.
+//
 //  What this driver does to the hardware:
 //    - enables PCI memory space and bus mastering, and one MSI vector;
 //    - performs the HOST_BAR_READY handshake and waits for the firmware ("adapter ready");
@@ -309,8 +314,9 @@ LogPCIConfiguration(IOPCIDevice * pci)
     pci->ConfigurationRead8(kCfgCapPtr, &capPtr);
     pci->ConfigurationRead32(kCfgIntLinePin, &intLinePin);
 
-    DLog("PCI %04x:%04x subsystem %04x:%04x expected %04x:%04x",
-         vendor, device, subVendor, subDevice, kDroboPCIVendorID, kDrobo8DPCIDeviceID);
+    DLog("PCI %04x:%04x subsystem %04x:%04x expected %04x:%04x or %04x:%04x",
+         vendor, device, subVendor, subDevice, kDroboPCIVendorID, kDrobo8DPCIDeviceID,
+         kDroboPCIVendorID, kDroboTBPCIDeviceID);
     DLog("command 0x%04x (io %d, mem %d, busmaster %d) status 0x%04x",
          command, command & 1, (command >> 1) & 1, (command >> 2) & 1, status);
     DLog("class 0x%06x revision 0x%02x header 0x%02x capptr 0x%02x intpin %u",

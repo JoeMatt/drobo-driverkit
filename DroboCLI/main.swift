@@ -341,7 +341,10 @@ func run() -> Int32 {
         print(keys)
         return 0
     case "diagnostics":
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        // The command usually runs through a link in /usr/local/bin; resolve it to find the app.
+        let app = Bundle.main.executableURL?.resolvingSymlinksInPath()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let version = app.flatMap { Bundle(url: $0) }?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         printJSON(DroboMonitor.diagnostics(appVersion: version, commit: ""))
         return 0
     default:

@@ -17,6 +17,7 @@
 
 static const uint16_t kDroboPCIVendorID   = 0x4452;   // "DR"
 static const uint16_t kDrobo8DPCIDeviceID = 0x3844;   // "8D"
+static const uint16_t kDroboTBPCIDeviceID = 0x5570;   // "Up": other Thunderbolt models, untested
 
 // MARK: BAR0 (register window)
 

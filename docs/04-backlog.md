@@ -31,8 +31,10 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
    8D's doorbell values and only checks them against the device's tables. Implement the
    and/or/xor/set/none interpreter from protocol notes section 6 so other firmware and models
    can work.
-8. **Second PCI ID `4452:5570`** [driver, needs hardware]. Add the personality behind the same
-   safety checks. Needs an owner of such a unit.
+8. **Test the second PCI ID `4452:5570`** [driver, app, needs hardware]. The personality is in
+   since v0.24.0, behind the same bring-up checks, and has never met a real unit. Needs an owner
+   of a 5D, 5D3 or Mini: read-only first, a diagnostics file, then fix what the app assumes
+   about the 8D (bay numbering and the SSD bay's slot id).
 9. **Forward read-only passthrough CDBs from the SCSI layer** [driver, protocol]. The kext
    passed INQUIRY, MODE SENSE and unknown opcodes to the device; the dext answers them itself.
    Needs the SGL buffer mode (flag `0x10`) for the task's data buffer.
@@ -57,3 +59,9 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
 14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
     performance history across app restarts, add latency over time (the driver publishes only
     running totals, so the app must difference them), and export the event log.
+15. **USB Drobos in the dashboard** [app, protocol, research]. USB models mount through macOS's
+    own mass-storage driver, so no driver is needed for data. Open question: can the management
+    pages (MODE SENSE page `0x3A`) be read from a mounted USB Drobo from user space? macOS
+    normally reserves SCSI commands to disks for its own driver. Find out what Drobo Dashboard
+    did on the Mac (item 1), and whether a small USBDriverKit or SCSI peripheral driver would be
+    needed. Read-only investigation; needs an owner of a USB unit.

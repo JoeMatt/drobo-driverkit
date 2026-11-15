@@ -23,7 +23,8 @@ for the direct-attached Thunderbolt units.
 | Blink lights | **Turned off.** As sent today it makes the 8D stop responding and restart |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
-| Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
+| Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |
+| USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` do not show them yet |
 | Intel Macs | Not supported; use Drobo's original driver there |
 | Menu bar item, background monitoring, notifications, open at login | In the app (Settings) |
 | Update checks (release or nightly channel) | Tells you when a newer version exists; installing it still means rebuilding |
@@ -218,11 +219,19 @@ Open DroboDriverKit and click **Deactivate**, then delete the app from Applicati
 
 ## Other models
 
-The driver only attaches to the 8D (PCI ID `4452:3844`). Drobo's own driver also handled a
-second ID, `4452:5570`, which is probably the 5D-family Thunderbolt units, with the same
-protocol. Nobody has tried one with this driver. If you have one and are comfortable testing
-read-only, add a second personality with `IOPCIMatch` `0x55704452` to `DroboDriver/Info.plist`
-and open an issue with what happens.
+**Other Thunderbolt Drobos (5D, 5D3, Mini): not tested, probably fine.** Drobo's own driver
+handled two PCI IDs with the same code: `4452:3844` (the 8D, tested here) and `4452:5570`, which
+is probably the 5D-family Thunderbolt units. Since v0.24.0 this driver attaches to both. Nobody
+has tried the second one yet. It starts read-only like the 8D, and it refuses to run if the
+unit does not describe its interface the way the 8D does, in which case the app's Advanced tab
+shows the stage it stopped at. If you have one, please open an issue with what happens and
+attach a diagnostics file. Expect rough edges in the app, which labels bays the way the 8D
+numbers them.
+
+**USB Drobos** do not need this driver: macOS mounts them as ordinary USB disks. What is missing
+is the dashboard, because the status pages are read with commands that macOS does not let an app
+send to a mounted USB disk on its own. Whether that can be done without a second driver is an
+open question in the backlog.
 
 ## For developers
 
