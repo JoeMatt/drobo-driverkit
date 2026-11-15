@@ -30,8 +30,6 @@ struct ContentView: View {
         return Tab(rawValue: name.capitalized) ?? .summary
     }()
     @AppStorage(DashboardModel.extendedKey) private var readDriveDetails = false
-    @AppStorage(DashboardModel.extendedOverrideKey) private var readDriveDetailsNow = false
-    @State private var confirmDetailsNow = false
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
@@ -390,6 +388,11 @@ struct ContentView: View {
                 if !snapshot.firmwareBuild.isEmpty { row("calendar", "Firmware build", snapshot.firmwareBuild) }
                 row("bolt.horizontal", "Interface", "Thunderbolt")
                 row("number", "Serial", snapshot.serial)
+                if let temperature = snapshot.systemTemperature { row("thermometer.medium", "Temperature", "\(temperature) °C") }
+                if let uptime = snapshot.uptime, uptime > 0 { row("clock", "Uptime", Self.uptimeText(uptime)) }
+                if !snapshot.fanLevels.isEmpty {
+                    row("fan", "Fans", snapshot.fanLevels.map { "level \($0)" }.joined(separator: ", "))
+                }
                 if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold {
                     row("gauge.with.dots.needle.33percent", "Capacity alerts", "\(yellow)% and \(red)%")
                 }
@@ -401,6 +404,13 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private static func uptimeText(_ seconds: UInt32) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = seconds >= 86_400 ? [.day, .hour, .minute] : [.hour, .minute]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: TimeInterval(seconds)) ?? "\(seconds) s"
     }
 
     // MARK: Drives
@@ -502,6 +512,12 @@ struct ContentView: View {
                         }
                         Spacer(minLength: 4)
                         if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
+                            if lun.writable {
+                                let hasIcon = VolumeIcons.isSet(on: url)
+                                Button(hasIcon ? "Remove Icon" : "Set Icon") { dashboard.setFinderIcon(!hasIcon, lun: lun) }
+                                    .buttonStyle(PillButtonStyle(icon: "photo", compact: true))
+                                    .help("A Drobo-style Finder icon with a light bar showing how full the volume is. It is a file written to the volume.")
+                            }
                             Button("Open in Finder") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(PillButtonStyle(icon: "folder", compact: true))
                         }
@@ -564,21 +580,18 @@ struct ContentView: View {
         }
     }
 
-    /// Opt-in for the per-drive page the driver does not read by default.
+    /// Opt-in for the status pages the driver does not read by default.
     private var driveDetailsCard: some View {
         let snapshot = dashboard.snapshot
-        let fragile = DashboardModel.isFragile(snapshot)
         let status = snapshot.extendedFailed
             ? "This Drobo did not answer the request, so the driver stopped asking. It stays off until the driver restarts."
-            : fragile && readDriveDetails && !readDriveDetailsNow
-            ? "Waiting: nothing new is asked of the Drobo while it is rebuilding or has no redundancy. It turns on by itself afterwards."
-            : snapshot.extendedEnabled ? "On. Temperature, error count, firmware and serial number are on the Drives tab."
+            : snapshot.extendedEnabled ? "On. Drive details are on the Drives tab; temperature, uptime and fans are on Summary."
             : readDriveDetails ? "Asked for; waiting for the driver. This needs driver 0.25.0 or later (press Activate after updating)."
             : "Off."
-        return Bezel(title: "Drive details · experimental") {
+        return Bezel(title: "Drive and system details · experimental") {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Asks the Drobo for each drive's temperature, error count, firmware revision and serial number. It is a read-only status request that Drobo's own software also sends, but it has not been tried on every model. If the Drobo refuses it, the driver stops asking.")
+                    Text("Asks the Drobo for each drive's temperature, error count, firmware revision and serial number, and for its own temperature, uptime, fans and power supplies. These are read-only status requests that Drobo's own software also sends, but they have not been tried on every model. A request the Drobo refuses is dropped.")
                         .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(status).font(Theme.text(11.5, .medium))
@@ -586,28 +599,12 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                if fragile, readDriveDetails, !readDriveDetailsNow, !snapshot.extendedFailed {
-                    Button("Turn On Now…") { confirmDetailsNow = true }
-                        .buttonStyle(PillButtonStyle(compact: true))
-                }
-                Toggle("Read drive details", isOn: $readDriveDetails)
+                Toggle("Read drive and system details", isOn: $readDriveDetails)
                     .toggleStyle(.switch).labelsHidden().tint(Theme.emerald)
-                    .onChange(of: readDriveDetails) { _, on in
-                        if !on { readDriveDetailsNow = false }
-                        dashboard.extendedSettingChanged()
-                    }
+                    .onChange(of: readDriveDetails) { _, _ in dashboard.extendedSettingChanged() }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .confirmationDialog("Ask the Drobo for drive details while it is rebuilding?", isPresented: $confirmDetailsNow) {
-            Button("Turn On Now") {
-                readDriveDetailsNow = true
-                dashboard.extendedSettingChanged()
-            }
-            Button("Wait for the Rebuild", role: .cancel) {}
-        } message: {
-            Text("This is a read-only status request that Drobo's own software also sends, but this driver has never sent it to a Drobo, and yours has no redundancy right now. If the Drobo refuses or ignores it the driver stops asking. An earlier untested command (Blink) made this unit restart.")
-        }
     }
 
     private var diagnosticsCard: some View {

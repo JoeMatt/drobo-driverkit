@@ -769,6 +769,43 @@ and appeared to work. No checksum comparison after eject and remount has been do
 unit was rebuilding at the time, so the write path stays "unverified" until backlog item 3 is
 carried out.
 
+### 11.11 System, performance, power and fan pages; USB units; volume icons (2026-11-15)
+
+More static analysis of Drobo Dashboard 3.6.1's service (`DDService64d`); nothing was sent to a
+Drobo. Offsets are from the start of the page, including the `7A <sub-page> <len16>` header;
+values are big-endian. Field names are the XML node names the service writes in
+`ESADevice::GetSysInfo`, `GetFanInfo`, `GetPowerInfo` and `GetPerformance`. **[obs]**
+
+| Page | Length | Layout |
+|---|---|---|
+| `33` system info (`ESASystemInfo::parse` @ `0x10009c07e`) | `0x18` | `0x08` u32 `UpTime`, `0x0C` u32 `Temperature`, `0x10` u32 not exported |
+| `34` performance (`ESASystemPerformance::parse` @ `0x10009c182`) | `0x20` (`0x1C` on older protocol) | `0x08` u32 `Iops`, `0x0C` u32 `ReadThroughout`, `0x10` u32 `WriteThroughout`, `0x14` u32 not exported, `0x18` u32 `TierIOps` |
+| `36` power supply (`ESAPowerSupply::parse` @ `0x10009c27a`) | `0x2D` | `0x09` u16 and `0x0B` u16 `Health` (two supplies), `0x0D` char[16] and `0x1D` char[16] `Serial` |
+| `37` fan (`ESAFanInfo::parse` @ `0x10009c394`) | `0x2E` | `0x08` char[16] `Serial`, `0x18` u16 `Health`, `0x1A` four u32 `RPMLevel`, `0x2A` four u8 `RPMHealth` (newer protocol only) |
+
+Units are not stated anywhere in the binary. The app treats uptime as seconds and temperature as
+degrees Celsius, and shows fan values as "levels"; **all three are assumptions to check against
+the first real dump**. The health words are kept in diagnostics only.
+
+Since driver v0.26.0 these four pages are polled with page `35` when the app's "Read drive and
+system details" switch is on (keys `System`, `Performance`, `Power`, `Fan` under `DroboHealth`).
+A page the Drobo answers with an error is dropped on its own; if one goes unanswered all the
+optional pages are dropped and polling pauses 30 seconds. **None has been tried on hardware.**
+
+**USB units.** Dashboard does not reach USB (or FireWire) Drobos through macOS's own disk
+driver. It installs a second kext, `TrustedDataSCSIDriver.kext`, whose personalities attach to
+`IOSCSIPeripheralDeviceNub` for devices whose INQUIRY vendor is Drobo (products include
+`Drobo3`, `DroboPro`, `Mini`, `5D3`, `8D`, `B810i`), as peripheral device type 0 with its own
+user client for SCSI passthrough. So a user-space app cannot read the management pages of a USB
+Drobo by itself; the DriverKit equivalent would be a second driver built on
+`SCSIPeripheralsDriverKit` that takes over the disk. **[obs]**
+
+**Volume icons.** The model icons (`Drobo.icns`, `5D-TB.icns`, `Mini-TB.icns`, …) are resources
+of that same kext, and the service also copies a `.VolumeIcon.icns` onto volumes
+(`DNASShareMapInfo::DroboCustomShareIcon`, which skips a volume that already has one). This
+project's app writes its own `.VolumeIcon.icns` (through `NSWorkspace.setIcon`), only on
+volumes with Allow writes on and only when asked. **[obs]**
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

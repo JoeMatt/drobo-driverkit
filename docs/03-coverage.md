@@ -4,7 +4,7 @@ What the original Drobo software did, and where this project stands. Status valu
 **verified** (seen working on a Drobo 8D), **unverified** (implemented, compiles, not yet run
 on hardware), **partial**, **no**.
 
-Last updated for driver v0.25.0.
+Last updated for driver v0.26.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -110,9 +110,11 @@ publishes its raw bytes under `DroboHealth`.
 | Dual disk redundancy, spin-down | Options page `31` | shown (Summary), editable (Advanced) |
 | Identify | Blink command | **disabled**: restarts the unit as currently sent (protocol notes 11.8) |
 | Open in Finder | no protocol needed | in the app (Volumes) |
+| Drobo-style Finder volume icon with a fullness bar | a `.VolumeIcon.icns` written to the volume | in the app (Volumes → Set Icon), writable volumes only; checked on a disk image, not on a Drobo |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
-| Temperature (controller), uptime | probably system info, sub-page `33`; layout not decoded | **not polled**, backlog item 13 |
-| Fan speed, power supply | sub-pages `37` and `36`; layouts not decoded | **not polled**, backlog item 13 |
+| Enclosure temperature, uptime | system info, sub-page `33` (protocol notes 11.11) | unverified: opt-in since v0.26.0, shown on Summary; units assumed; never tried on hardware |
+| Fan levels | sub-page `37` | unverified: opt-in since v0.26.0, shown on Summary |
+| Fan and power supply health, the Drobo's own IOPS and throughput | sub-pages `37`, `36`, `34` | polled when opted in; decoded into diagnostics only, encodings unknown |
 | Disk pack status | sub-page `11`; layout not decoded | **not polled**, backlog item 13 |
 | Hot data cache, data integrity | no page identified | **unknown** |
 | Events log | the Drobo's own log: no reference | **unknown**. The Events tab instead records changes the app sees between polls (alerts, drive states, restarts, mounts) |

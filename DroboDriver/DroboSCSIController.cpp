@@ -14,9 +14,9 @@
 //    - writes Host Interface Version = 1 into the DroboPort capabilities;
 //    - sends READ requests on the block I/O channel, up to 32 at a time in bursts, and
 //      completes them from the interrupt handler (a timer is the fallback).
-//    - (v0.25.0) when the app turns it on, also sends MODE SENSE(10) page 0x3A sub-page 0x35 on
-//      the passthrough channel with the other management pages. Read-only; Drobo Dashboard
-//      sends the same request. Never tried on hardware before this version.
+//    - when the app turns it on, also sends MODE SENSE(10) page 0x3A sub-pages 0x35 (v0.25.0)
+//      and 0x33, 0x34, 0x36, 0x37 (v0.26.0) on the passthrough channel with the other
+//      management pages. Read-only; Drobo Dashboard sends the same requests.
 //  What it never does:
 //    - send a write of any kind. WRITE/UNMAP/FORMAT etc. are rejected in the driver with
 //      DATA PROTECT, and MODE SENSE reports the medium as write-protected;
@@ -68,14 +68,17 @@ struct DroboLUN
 
 // Drobo management pages: MODE SENSE(10), page 0x3A, one sub-page each. The formats are those
 // documented by the open-source drobo-utils project; the host app decodes them.
-static const uint32_t kHealthPageCount = 10;
+static const uint32_t kHealthPageCount = 14;
 static const uint32_t kHealthPageMax   = 1024;      // slot page 2: 12 + 9 x 108 = 984
-static const uint8_t  kHealthPages[kHealthPageCount] = { 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x30, 0x31, 0x35 };
-// Sub-page 0x35 (per-drive temperature, error count, firmware, serial; protocol notes 11.9) is
-// the one page not known to work on the 8D. It is asked for only after the app turns it on, and
-// is given up for good (until the driver restarts) the first time the Drobo refuses it or does
-// not answer.
-static const uint8_t  kHealthOptionalPage = 0x35;
+static const uint8_t  kHealthPages[kHealthPageCount] = {
+    0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x30, 0x31,
+    0x35, 0x33, 0x34, 0x36, 0x37
+};
+// The pages from this index on (per-drive details, system info, performance, power supply,
+// fan; layouts in protocol notes 11.9 and 11.11) are not known to work on every model. They are
+// asked for only after the app turns them on. A page the Drobo refuses is given up on its own;
+// if one goes unanswered they are all given up. Either way until the driver restarts.
+static const uint32_t kHealthFirstOptional = 9;
 static const uint32_t kHealthHoldMS       = 30000;  // pause after an optional page times out
 static const uint32_t kSysSlot         = 33;        // request slot for system-control requests
 static const uint32_t kMaxFlushWaiters = 32;
@@ -208,7 +211,7 @@ struct DroboSCSIController_IVars
     uint32_t                   healthLength[kHealthPageCount];
     uint8_t                    healthData[kHealthPageCount][kHealthPageMax];
     bool                       extendedEnabled;     // app asked for the optional page
-    bool                       extendedFailed;      // the Drobo refused it or never answered
+    uint32_t                   extendedFailedMask;  // bit per page index the Drobo refused or ignored
     uint64_t                   healthHoldUntil;     // no health requests before this time
 
     // Writing. Off for every LUN until the app turns it on for specific ones.
@@ -528,7 +531,8 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     status->setObject("FlushForwarding", iv->sysAvailable ? kOSBooleanTrue : kOSBooleanFalse);
     status->setObject("Asleep", iv->asleep ? kOSBooleanTrue : kOSBooleanFalse);
     status->setObject("ExtendedSlots", iv->extendedEnabled ? kOSBooleanTrue : kOSBooleanFalse);
-    status->setObject("ExtendedSlotsFailed", iv->extendedFailed ? kOSBooleanTrue : kOSBooleanFalse);
+    status->setObject("ExtendedSlotsFailed", (iv->extendedFailedMask & (1u << kHealthFirstOptional)) ? kOSBooleanTrue : kOSBooleanFalse);
+    DictSetNumber(status, "ExtendedFailedMask", iv->extendedFailedMask >> kHealthFirstOptional);
     DictSetNumber(status, "WritableMask", iv->writableMask);
     DictSetNumber(status, "Writes", iv->statWrites);
     DictSetNumber(status, "WriteBytes", iv->statWriteBytes);
@@ -1202,8 +1206,10 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
             case kDroboAppCommandSetExtended: {
                 iv->extendedEnabled = argument != 0;
                 if (!iv->extendedEnabled) {
-                    // Forget what was read, so stale drive data is not published.
-                    iv->healthLength[kHealthPageCount - 1] = 0;
+                    // Forget what was read, so stale data is not published.
+                    for (uint32_t i = kHealthFirstOptional; i < kHealthPageCount; i++) {
+                        iv->healthLength[i] = 0;
+                    }
                     PublishHealth();
                 }
                 PublishStatus(this, iv);
@@ -1964,6 +1970,10 @@ HealthPageLength(DroboSCSIController_IVars * iv, uint8_t page)
         case 0x30: return 4 + 9;                                // options: thresholds
         case 0x31: return 4 + 34;                               // options 2: flags, spin-down
         case 0x35: return 12 + 108 * iv->healthSlotCount;       // slot info 2: 12-byte header, 108 per drive
+        case 0x33: return 0x18;                                 // system info: uptime, temperature
+        case 0x34: return 0x20;                                 // system performance
+        case 0x36: return 0x2D;                                 // power supplies
+        case 0x37: return 0x2E;                                 // fans
         default:   return 0;
     }
 }
@@ -1978,7 +1988,7 @@ DroboSCSIController::PublishHealth()
     }
     static const char * const kKeys[kHealthPageCount] = {
         "Config", "Capacity", "Slots", "Settings", "Protocol", "Firmware", "Status", "Options", "Options2",
-        "Slots2"
+        "Slots2", "System", "Performance", "Power", "Fan"
     };
     for (uint32_t i = 0; i < kHealthPageCount; i++) {
         if (iv->healthLength[i] != 0) {
@@ -2004,12 +2014,12 @@ DroboSCSIController::PublishHealth()
     health->release();
 }
 
-// Steps past the optional page unless the app asked for it and it has not failed.
+// Steps past optional pages the app has not asked for or that have failed.
 static void
 SkipOptionalHealthPage(DroboSCSIController_IVars * iv)
 {
-    if (iv->healthPage < kHealthPageCount && kHealthPages[iv->healthPage] == kHealthOptionalPage &&
-        (!iv->extendedEnabled || iv->extendedFailed)) {
+    while (iv->healthPage >= kHealthFirstOptional && iv->healthPage < kHealthPageCount &&
+           (!iv->extendedEnabled || (iv->extendedFailedMask & (1u << iv->healthPage)) != 0)) {
         iv->healthPage++;
     }
 }
@@ -2135,9 +2145,9 @@ DroboSCSIController::HealthResponse()
         }
     } else {
         iv->healthErrors++;
-        if (kHealthPages[index] == kHealthOptionalPage) {
-            // The Drobo refused the optional page: stop asking, keep everything else.
-            iv->extendedFailed = true;
+        if (index >= kHealthFirstOptional) {
+            // The Drobo refused this optional page: stop asking for it, keep everything else.
+            iv->extendedFailedMask |= 1u << index;
             iv->healthLength[index] = 0;
             PublishStatus(this, iv);
         }
@@ -2162,17 +2172,19 @@ IMPL(DroboSCSIController, HandleHealthTimer)
     }
     // A health query that never came back disables health polling; block I/O is unaffected.
     if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > 10000 * iv->ticksPerMillisecond) {
-        const bool optional = !iv->commandInflight && iv->healthPage < kHealthPageCount &&
-                              kHealthPages[iv->healthPage] == kHealthOptionalPage;
+        const bool optional = !iv->commandInflight && iv->healthPage >= kHealthFirstOptional &&
+                              iv->healthPage < kHealthPageCount;
         iv->tmInflight = false;
         iv->commandInflight = false;
         iv->healthErrors++;
         if (optional) {
-            // Only the optional page went unanswered: give it up and keep the rest. Wait before
-            // asking for anything else, so a late answer cannot be taken for another page's
-            // (responses on this channel carry no usable transaction ID).
-            iv->extendedFailed = true;
-            iv->healthLength[iv->healthPage] = 0;
+            // An optional page went unanswered: give all of them up and keep the rest. Wait
+            // before asking for anything else, so a late answer cannot be taken for another
+            // page's (responses on this channel carry no usable transaction ID).
+            for (uint32_t i = kHealthFirstOptional; i < kHealthPageCount; i++) {
+                iv->extendedFailedMask |= 1u << i;
+                iv->healthLength[i] = 0;
+            }
             iv->healthPage = kHealthPageCount;
             iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kHealthHoldMS * iv->ticksPerMillisecond;
             PublishStatus(this, iv);

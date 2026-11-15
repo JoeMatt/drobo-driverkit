@@ -246,22 +246,16 @@ final class DashboardModel: ObservableObject {
 
     /// The app setting behind "Read drive details". The driver forgets it when it restarts.
     static let extendedKey = "readDriveDetails"
-    /// Set when the owner chose not to wait for the rebuild to finish.
-    static let extendedOverrideKey = "readDriveDetailsWhileFragile"
-
-    /// True while the Drobo is rebuilding or has no redundancy: nothing new is asked of it then.
+    /// True while the Drobo is rebuilding or has no redundancy.
     static func isFragile(_ snapshot: DroboSnapshot) -> Bool {
         snapshot.isRebuilding || (snapshot.statusFlags ?? 0) & 0x40 != 0
     }
 
-    /// Keeps the driver's optional per-drive page in step with the app setting: on when asked
-    /// for and the Drobo is healthy, off again the moment it is not. One attempt per connection,
-    /// so an older driver that refuses the command is not asked repeatedly.
+    /// Keeps the driver's optional pages in step with the app setting. One attempt per
+    /// connection, so an older driver that refuses the command is not asked repeatedly.
     private func syncExtended(_ latest: DroboSnapshot) {
         guard latest.ready, latest.statusFlags != nil else { extendedAttempted = false; return }
-        let defaults = UserDefaults.standard
-        let wanted = defaults.bool(forKey: Self.extendedKey)
-            && (!Self.isFragile(latest) || defaults.bool(forKey: Self.extendedOverrideKey))
+        let wanted = UserDefaults.standard.bool(forKey: Self.extendedKey)
         if latest.extendedEnabled, !wanted {
             _ = DroboMonitor.send(.setExtended, argument: 0)
         } else if wanted, !latest.extendedEnabled, !latest.extendedFailed, !extendedAttempted {
@@ -374,6 +368,9 @@ final class DashboardModel: ObservableObject {
         luns = DroboMonitor.luns(latest, volumes: volumes)
         events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
         syncExtended(latest)
+        // Keep icons this app set earlier in step with how full each volume is.
+        let writableVolumes = volumes.filter { volume in luns.contains { $0.id == volume.lun && $0.writable } }.map(\.id)
+        if !writableVolumes.isEmpty { MainActor.assumeIsolated { VolumeIcons.refresh(writable: writableVolumes) } }
         if latest.driverPresent {
             performance.record(date: now, readRate: readRate, writeRate: writeRate, blocksLeft: latest.relayoutCount)
         }
@@ -442,6 +439,18 @@ final class DashboardModel: ObservableObject {
         if dualRedundancy { flags |= 0x1 }
         if spinDownMinutes > 0 { flags |= 0x2 }
         command(.setOptions, argument: flags | UInt32(max(0, min(spinDownMinutes, 600))) << 16, label: "Settings")
+    }
+
+    /// Puts the Drobo-style Finder icon on a volume, or takes it off. Writes to the volume, so
+    /// only where writing is allowed.
+    func setFinderIcon(_ on: Bool, lun: DroboLUN) {
+        guard lun.writable, let volume = volumes.first(where: { $0.lun == lun.id }) else {
+            message = "Allow writes on the volume first: its Finder icon is a file stored on the volume."
+            return
+        }
+        let failure = MainActor.assumeIsolated { on ? VolumeIcons.apply(to: volume.id) : VolumeIcons.remove(from: volume.id) }
+        message = failure ?? (on ? "Finder icon set on \(volume.name). Finder can take a moment to show it."
+                                 : "Finder icon removed from \(volume.name).")
     }
 
     /// Runs the write self-test on the first mounted volume that allows writing.

@@ -19,13 +19,14 @@ for the direct-attached Thunderbolt units.
 | Writing | **Experimental and off by default.** You enable it per volume in the app. Implemented but not yet verified on hardware: keep a copy of anything on a volume you make writable |
 | APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
-| Per-drive temperature, error count, firmware and serial | Experimental and off by default (Advanced → Read drive details). Not yet tried on hardware. The Drobo does not expose full S.M.A.R.T. data |
+| Per-drive temperature, error count, firmware and serial; enclosure temperature, uptime and fans | Experimental and off by default (Advanced → Read drive and system details). Not yet tried on hardware. The Drobo does not expose full S.M.A.R.T. data |
+| Drobo-style Finder icon with a fullness bar | Volumes → Set Icon, on volumes that allow writes (the icon is a file on the volume) |
 | Rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; rename and shutdown not yet verified on hardware |
 | Blink lights | **Turned off.** As sent today it makes the 8D stop responding and restart |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |
-| USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` do not show them yet |
+| USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` cannot show them: that needs a second driver, which is not started |
 | Intel Macs | Not supported; use Drobo's original driver there |
 | Menu bar item, background monitoring, notifications, open at login | In the app (Settings) |
 | Update checks (release or nightly channel) | Tells you when a newer version exists; installing it still means rebuilding |
@@ -237,9 +238,10 @@ attach a diagnostics file. Expect rough edges in the app, which labels bays the 
 numbers them.
 
 **USB Drobos** do not need this driver: macOS mounts them as ordinary USB disks. What is missing
-is the dashboard, because the status pages are read with commands that macOS does not let an app
-send to a mounted USB disk on its own. Whether that can be done without a second driver is an
-open question in the backlog.
+is the dashboard. The status pages are read with commands that macOS does not let an app send
+to a mounted USB disk, which is why Drobo's own software installed a second kernel driver for
+them. Doing the same here means a second driver extension that takes over the USB disk; it is
+in the backlog and not started.
 
 ## For developers
 

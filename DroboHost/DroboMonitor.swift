@@ -123,9 +123,26 @@ struct DroboSnapshot {
     var yellowThreshold: Int?
     var redThreshold: Int?
     var latency: [DroboLatency] = []
-    /// The driver is polling the optional per-drive page / gave it up after the Drobo refused it.
+    /// The driver is polling the optional pages / gave the per-drive page up after the Drobo
+    /// refused it.
     var extendedEnabled = false
     var extendedFailed = false
+
+    // From the optional system pages (sub-pages 0x33, 0x37, 0x36, 0x34; protocol notes 11.11).
+    // nil or empty unless those pages are on and the Drobo answers them.
+    /// Enclosure temperature. Assumed to be degrees Celsius like the per-drive value.
+    var systemTemperature: Int?
+    /// Assumed to be seconds since the Drobo started; to be confirmed on hardware.
+    var uptime: UInt32?
+    /// Speed level per fan as the Drobo reports it (not confirmed to be RPM). Zero entries are dropped.
+    var fanLevels: [UInt32] = []
+    /// Raw health words whose encodings are not known yet; kept for diagnostics, not shown.
+    var fanHealth: Int?
+    var powerHealth: [Int] = []
+    /// The Drobo's own performance counters (IOPS, read and write throughput), units unconfirmed.
+    var deviceIOPS: UInt32?
+    var deviceReadThroughput: UInt32?
+    var deviceWriteThroughput: UInt32?
     var statusFlags: UInt32?
     var relayoutCount: UInt32 = 0
     var freeBytes: UInt64?
@@ -265,7 +282,32 @@ enum DroboMonitor {
             snapshot.slots = slots
         }
         if let page = payload(health["Slots2"]) { applySlots2(page, to: &snapshot) }
+        applySystemPages(system: payload(health["System"]), fan: payload(health["Fan"]),
+                         power: payload(health["Power"]), performance: payload(health["Performance"]), to: &snapshot)
         return snapshot
+    }
+
+    /// Decodes the optional system pages, each given without its 4-byte header (so every offset
+    /// here is the page offset in protocol notes 11.11 minus 4).
+    static func applySystemPages(system: [UInt8]?, fan: [UInt8]?, power: [UInt8]?, performance: [UInt8]?,
+                                 to snapshot: inout DroboSnapshot) {
+        if let page = system, page.count >= 12 {            // 0x33: uptime u32 @8, temperature u32 @0xC
+            snapshot.uptime = be32(page, 4)
+            let temperature = Int(be32(page, 8))
+            snapshot.systemTemperature = (1...150).contains(temperature) ? temperature : nil
+        }
+        if let page = fan, page.count >= 38 {               // 0x37: health u16 @0x18, four u32 levels @0x1A
+            snapshot.fanHealth = Int(be16(page, 20))
+            snapshot.fanLevels = (0..<4).map { be32(page, 22 + 4 * $0) }.filter { $0 != 0 }
+        }
+        if let page = power, page.count >= 9 {              // 0x36: two health u16 @9 and @0xB
+            snapshot.powerHealth = [Int(be16(page, 5)), Int(be16(page, 7))]
+        }
+        if let page = performance, page.count >= 16 {       // 0x34: IOPS, read, write u32 @8, @0xC, @0x10
+            snapshot.deviceIOPS = be32(page, 4)
+            snapshot.deviceReadThroughput = be32(page, 8)
+            snapshot.deviceWriteThroughput = be32(page, 12)
+        }
     }
 
     /// Fills in per-drive details from the optional second slot page (sub-page 0x35), given the
@@ -547,6 +589,14 @@ enum DroboMonitor {
                  "lifeRemaining": $0.lifeRemaining ?? -1, "rotationalSpeed": $0.rotationalSpeed ?? -1] as [String: Any]
             },
             "lunBlocks": current.lunBlocks,
+            "systemTemperature": current.systemTemperature ?? -1,
+            "uptime": Int(current.uptime ?? 0),
+            "fanLevels": current.fanLevels.map { Int($0) },
+            "fanHealth": current.fanHealth ?? -1,
+            "powerHealth": current.powerHealth,
+            "deviceIOPS": Int(current.deviceIOPS ?? 0),
+            "deviceReadThroughput": Int(current.deviceReadThroughput ?? 0),
+            "deviceWriteThroughput": Int(current.deviceWriteThroughput ?? 0),
         ] as [String: Any]
         return report
     }

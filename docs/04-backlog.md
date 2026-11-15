@@ -45,27 +45,25 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     and the `drobo` command read only the first controller they find, and match volumes to
     units by LUN number alone. Key everything by controller (registry entry ID or serial) and
     add a device switcher to the dashboard and a `--device` option to the command.
-12. **Drobo volume icons in Finder** [app, driver, needs hardware]. Drobo Dashboard gave mounted
-    volumes a Drobo-styled disk icon with a light bar showing how full the volume is. Two routes
-    to investigate: a custom `.VolumeIcon.icns` written to the volume (needs write access, so not
-    possible on the read-only default), or an icon the driver supplies for its disks. Decide
-    which is feasible under DriverKit before building either.
-13. **Per-drive and system telemetry** [driver, app, protocol, needs hardware]. Protocol notes
-    11.9 has Drobo Dashboard's full sub-page map and the per-drive record of sub-page `35`
-    (temperature, error count, firmware revision, serial, SSD life remaining, rotational speed).
-    Page `35` is implemented (opt-in, v0.25.0) and waits for a first try on a healthy unit.
-    Steps: (a) read the layouts of `33` system info, `34` performance,
-    `36` power supply, `37` fan, `11` disk pack from the same binary; (b) turn on Read drive
-    details on a unit that is **not rebuilding** and record what page `35` returns in protocol
-    notes section 11; (c) work out the encodings of disk state, disk type, life remaining and
-    rotational speed from that dump. Also still unused from polled pages: the
-    device clock, the protocol version and the config page's LUN limits.
+12. **Finder icons for read-only volumes** [driver, research]. The app can now put a Drobo-style
+    icon with a fullness bar on a volume that allows writes (the icon is a file on the volume,
+    as Drobo's own software did it). Read-only volumes still get the generic icon. Drobo's kext
+    supplied device icons from its own bundle; find out whether a DriverKit driver can supply an
+    `IOMediaIcon` for its disks.
+13. **Verify the optional pages on hardware** [driver, app, needs hardware]. Pages `35`
+    (drives), `33` (system), `34` (performance), `36` (power), `37` (fan) are implemented behind
+    "Read drive and system details" (v0.26.0), from Drobo Dashboard's layouts (protocol notes
+    11.9 and 11.11), and have never met a Drobo. Turn the switch on, save a diagnostics file,
+    and from it: confirm which pages the 8D answers; confirm the units of uptime, temperature
+    and fan level; work out the health words and the per-drive disk state, disk type, life
+    remaining and rotational speed. Still undecoded: `11` disk pack, `38` controller card.
 14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
     performance history across app restarts, add latency over time (the driver publishes only
     running totals, so the app must difference them), and export the event log.
-15. **USB Drobos in the dashboard** [app, protocol, research]. USB models mount through macOS's
-    own mass-storage driver, so no driver is needed for data. Open question: can the management
-    pages (MODE SENSE page `0x3A`) be read from a mounted USB Drobo from user space? macOS
-    normally reserves SCSI commands to disks for its own driver. Find out what Drobo Dashboard
-    did on the Mac (item 1), and whether a small USBDriverKit or SCSI peripheral driver would be
-    needed. Read-only investigation; needs an owner of a USB unit.
+15. **USB Drobos in the dashboard** [driver, research, needs hardware]. Settled by analysis
+    (protocol notes 11.11): Drobo's software needed its own kernel driver to send management
+    commands to USB units, so an app alone cannot do it. The route is a second driver extension
+    on `SCSIPeripheralsDriverKit` that matches the Drobo's INQUIRY identity and takes over the
+    disk, which means it carries all of that disk's I/O. That needs its own entitlement, an
+    owner of a USB unit to test with, and the same read-only-first discipline as this driver.
+    Not started.

@@ -67,6 +67,9 @@ enum Demo {
         } + [DroboSlot(id: 8, physicalBytes: 0, statusCode: 0x80, model: "")]
         snapshot.unprotectedBytes = 0
         snapshot.extendedEnabled = true
+        snapshot.systemTemperature = 36
+        snapshot.uptime = 84 * 86_400 + 2 * 3600 + 51 * 60
+        snapshot.fanLevels = [3, 3]
         data.snapshot = snapshot
         data.luns = [
             DroboLUN(id: 0, bytes: 16 * tb, volumeNames: ["Archive"], bsdName: nil, writable: false),

@@ -134,6 +134,9 @@ func deviceText(_ state: State) -> String {
     if let dual = snapshot.dualDiskRedundancy { rows.append(["Redundancy", dual ? "dual disk" : "single disk"]) }
     if let minutes = snapshot.spinDownMinutes { rows.append(["Spin-down", minutes > 0 ? "\(minutes) min" : "off"]) }
     if snapshot.relayoutCount > 0 { rows.append(["Rebuild", "\(snapshot.relayoutCount) blocks left"]) }
+    if let temperature = snapshot.systemTemperature { rows.append(["Temperature", "\(temperature) C"]) }
+    if let uptime = snapshot.uptime, uptime > 0 { rows.append(["Uptime", "\(uptime / 86_400)d \(uptime % 86_400 / 3600)h \(uptime % 3600 / 60)m"]) }
+    if !snapshot.fanLevels.isEmpty { rows.append(["Fans", snapshot.fanLevels.map { "level \($0)" }.joined(separator: ", ")]) }
     for alert in state.alerts { rows.append(["Alert", alert]) }
     return table(rows)
 }
@@ -190,6 +193,9 @@ func deviceJSON(_ state: State) -> [String: Any] {
     }
     if let dual = snapshot.dualDiskRedundancy { device["dualDiskRedundancy"] = dual }
     if let minutes = snapshot.spinDownMinutes { device["spinDownMinutes"] = minutes }
+    if let temperature = snapshot.systemTemperature { device["temperatureC"] = temperature }
+    if let uptime = snapshot.uptime { device["uptimeSeconds"] = uptime }
+    if !snapshot.fanLevels.isEmpty { device["fanLevels"] = snapshot.fanLevels }
     return device
 }
 
@@ -233,6 +239,14 @@ func metricsText(_ state: State) -> String {
             ([("kind", "total")], "\(capacity.total)"),
         ])
     }
+    if let temperature = snapshot.systemTemperature {
+        metric("drobo_temperature_celsius", "Enclosure temperature (needs details turned on in the app).", "gauge", one("\(temperature)"))
+    }
+    if let uptime = snapshot.uptime {
+        metric("drobo_uptime_seconds", "Time since the Drobo started (needs details turned on).", "gauge", one("\(uptime)"))
+    }
+    metric("drobo_fan_level", "Fan speed level as the Drobo reports it (needs details turned on).", "gauge",
+           snapshot.fanLevels.enumerated().map { ([("fan", "\($0.offset + 1)")], "\($0.element)") })
     let filled = snapshot.slots.filter { !$0.isEmpty }
     metric("drobo_bays", "Number of drive bays.", "gauge", one("\(snapshot.slots.count)"))
     metric("drobo_drive_healthy", "1 if the drive in this bay reports healthy.", "gauge",
@@ -269,6 +283,7 @@ redundancy                   single or dual
 spin-down                    minutes, 0 when off
 drives  bays                 drives installed, bays in total
 alerts                       one per line
+temperature  uptime  fans    enclosure, when drive and system details are on in the app
 drive.<bay>.status|size|size-human|model          bay is 1-8 or ssd
 drive.<bay>.temperature|errors|firmware|serial    only when drive details are on in the app
 volume.<name|unit>.mounted|size|size-human|access|disk|name
@@ -322,6 +337,9 @@ func value(for key: String, in state: State) -> String? {
     case "drives": return "\(state.filledBays)"
     case "bays": return "\(snapshot.slots.count)"
     case "alerts": return state.alerts.joined(separator: "\n")
+    case "temperature": return snapshot.systemTemperature.map { "\($0)" }
+    case "uptime": return snapshot.uptime.map { "\($0)" }
+    case "fans": return snapshot.fanLevels.isEmpty ? nil : snapshot.fanLevels.map { "\($0)" }.joined(separator: " ")
     default: return nil
     }
 }
