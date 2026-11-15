@@ -52,11 +52,11 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     `IOMediaIcon` for its disks.
 13. **Verify the optional pages on hardware** [driver, app, needs hardware]. Pages `35`
     (drives), `33` (system), `34` (performance), `36` (power), `37` (fan) are implemented behind
-    "Read drive and system details" (v0.26.0), from Drobo Dashboard's layouts (protocol notes
-    11.9 and 11.11), and have never met a Drobo. Turn the switch on, save a diagnostics file,
-    and from it: confirm which pages the 8D answers; confirm the units of uptime, temperature
-    and fan level; work out the health words and the per-drive disk state, disk type, life
-    remaining and rotational speed. Still undecoded: `11` disk pack, `38` controller card.
+    "Read drive and system details". On the 8D (protocol notes 11.12, 11.13) `35`, `33` and
+    `34` answer and `36` and `37` are refused. Still open: the units of page `34` (capture it
+    under load), the per-drive disk state values, why the 8D reports drive temperature as 0,
+    and whether another model answers the fan and power pages. Still undecoded: `11` disk
+    pack, `38` controller card.
 14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
     performance history across app restarts, add latency over time (the driver publishes only
     running totals, so the app must difference them), and export the event log.

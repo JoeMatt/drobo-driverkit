@@ -827,6 +827,21 @@ records laid out as in 11.9. Polling continued with zero errors. What the record
 
 Pages `33`, `34`, `36` and `37` need driver v0.26.0 and have not been tried.
 
+### 11.13 Pages `33`, `34`, `36`, `37` on the 8D (driver v0.26.0, 2026-11-15)
+
+Same unit, still rebuilding, minutes after v0.26.0 was activated:
+
+- **`33` system info: answered**, 24 bytes: `7A 33 00 10 14 00 01 00 00 00 13 0C 00 00 00 1C 00 …`.
+  Uptime `0x130C` = 4876, which is 81 minutes and matches when the unit was last power-cycled,
+  so **uptime is in seconds**. Temperature `0x1C` = 28, plausible as **degrees Celsius** for
+  the enclosure.
+- **`34` performance: answered**, 32 bytes. `Iops`, `ReadThroughout`, `WriteThroughout` and
+  `TierIOps` were all 0 while the Mac was idle; the unexported u32 at `0x14` was `0x23`.
+  Units still unknown.
+- **`36` power supply and `37` fan: refused.** The driver recorded two health errors, dropped
+  those two pages (`ExtendedFailedMask` 24) and kept polling everything else with no further
+  errors. The 8D does not offer them, at least on this firmware.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

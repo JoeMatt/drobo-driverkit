@@ -113,9 +113,9 @@ publishes its raw bytes under `DroboHealth`.
 | Open in Finder | no protocol needed | in the app (Volumes) |
 | Drobo-style Finder volume icon with a fullness bar | a `.VolumeIcon.icns` written to the volume | in the app (Volumes → Set Icon), writable volumes only; checked on a disk image, not on a Drobo |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
-| Enclosure temperature, uptime | system info, sub-page `33` (protocol notes 11.11) | unverified: opt-in since v0.26.0, shown on Summary; units assumed; never tried on hardware |
-| Fan levels | sub-page `37` | unverified: opt-in since v0.26.0, shown on Summary |
-| Fan and power supply health, the Drobo's own IOPS and throughput | sub-pages `37`, `36`, `34` | polled when opted in; decoded into diagnostics only, encodings unknown |
+| Enclosure temperature, uptime | system info, sub-page `33` (protocol notes 11.11, 11.13) | **verified** on the 8D with v0.26.0 (uptime in seconds, temperature in °C); opt-in, shown on Summary |
+| Fan levels and health, power supply health | sub-pages `37`, `36` | **the 8D refuses both** (11.13); the driver drops them and carries on. Shown only on a unit that answers |
+| The Drobo's own IOPS and throughput | sub-page `34` | answered by the 8D; in diagnostics only, units unknown |
 | Disk pack status | sub-page `11`; layout not decoded | **not polled**, backlog item 13 |
 | Hot data cache, data integrity | no page identified | **unknown** |
 | Events log | the Drobo's own log: no reference | **unknown**. The Events tab instead records changes the app sees between polls (alerts, drive states, restarts, mounts) |
