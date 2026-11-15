@@ -37,9 +37,11 @@ The app includes `drobo`, a read-only status command for shell prompts, tmux or 
 lines, scripts and dashboards. It reads what the driver publishes and never sends anything to
 the Drobo.
 
-```bash
-ln -s /Applications/DroboDriverKit.app/Contents/MacOS/drobo /usr/local/bin/drobo
+Install it from the app: **Install Command Line Tool…** in the app menu, the menu bar item or
+Settings. That links `/usr/local/bin/drobo` to the copy inside the app and asks for an
+administrator password if the folder needs one.
 
+```bash
 drobo                       # Drobo: healthy · 7.4 TB of 34.4 TB used (22%) · 9/9 drives
 drobo --short               # Drobo ok 22%
 drobo all                   # device, every bay, every volume

@@ -115,3 +115,125 @@ enum Notifier {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 }
+
+/// Installs the bundled `drobo` command by linking it into /usr/local/bin, and reports whether
+/// it is installed. The link points into this app, so the command updates with the app.
+///
+/// /usr/local/bin usually needs an administrator, so when a plain link fails this asks macOS
+/// for an administrator password with the system's own dialog. The app never sees the password.
+final class CommandLineTool: ObservableObject {
+    static let linkPath = "/usr/local/bin/drobo"
+
+    enum State: Equatable {
+        case unavailable            // this build has no bundled command
+        case notInstalled
+        case installed              // links to this app
+        case elsewhere(String)      // links somewhere else, e.g. another copy of the app
+        case blocked                // a real file is at the path; never replaced
+    }
+
+    @Published private(set) var state = State.notInstalled
+
+    static var bundledPath: String? { Bundle.main.url(forAuxiliaryExecutable: "drobo")?.path }
+
+    init() { refresh() }
+
+    func refresh() {
+        guard let bundled = Self.bundledPath else { state = .unavailable; return }
+        let files = FileManager.default
+        if let target = try? files.destinationOfSymbolicLink(atPath: Self.linkPath) {
+            state = target == bundled ? .installed : .elsewhere(target)
+        } else {
+            state = files.fileExists(atPath: Self.linkPath) ? .blocked : .notInstalled
+        }
+    }
+
+    var statusText: String {
+        switch state {
+        case .unavailable: return "This build does not include the command."
+        case .notInstalled: return "Not installed."
+        case .installed: return "Installed at \(Self.linkPath)."
+        case .elsewhere(let target): return "\(Self.linkPath) points to another copy: \(target)"
+        case .blocked: return "Another file is already at \(Self.linkPath). Move it away to install."
+        }
+    }
+
+    /// Title for the menu item and button that acts on the current state.
+    var actionTitle: String {
+        switch state {
+        case .installed: return "Uninstall Command Line Tool…"
+        case .elsewhere: return "Update Command Line Tool…"
+        default: return "Install Command Line Tool…"
+        }
+    }
+
+    var canAct: Bool { state != .unavailable && state != .blocked }
+
+    /// Installs, re-points or removes the link depending on the current state, then says what
+    /// happened in an alert (this is called from menus, where there is nowhere else to say it).
+    func performAction() {
+        refresh()
+        let removing = state == .installed
+        let failure: String?
+        switch state {
+        case .unavailable, .blocked: failure = statusText
+        case .installed: failure = uninstall()
+        case .notInstalled, .elsewhere: failure = install()
+        }
+        refresh()
+        guard failure != "" else { return }          // cancelled at the password prompt
+        let alert = NSAlert()
+        if let failure {
+            alert.alertStyle = .warning
+            alert.messageText = removing ? "Could not remove the command" : "Could not install the command"
+            alert.informativeText = failure
+        } else {
+            alert.messageText = removing ? "Command line tool removed" : "Command line tool installed"
+            alert.informativeText = removing
+                ? "\(Self.linkPath) was removed."
+                : "Open a new terminal window and type drobo. It is read-only: it shows status and never sends anything to the Drobo."
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// nil on success, "" if the user cancelled, otherwise why it failed.
+    private func install() -> String? {
+        guard let bundled = Self.bundledPath else { return statusText }
+        let files = FileManager.default
+        do {
+            try files.createDirectory(atPath: "/usr/local/bin", withIntermediateDirectories: true)
+            if (try? files.destinationOfSymbolicLink(atPath: Self.linkPath)) != nil {
+                try files.removeItem(atPath: Self.linkPath)
+            }
+            try files.createSymbolicLink(atPath: Self.linkPath, withDestinationPath: bundled)
+            return nil
+        } catch {
+            return privileged("/bin/mkdir -p /usr/local/bin && /bin/ln -sfn \(Self.quoted(bundled)) \(Self.linkPath)")
+        }
+    }
+
+    private func uninstall() -> String? {
+        do {
+            try FileManager.default.removeItem(atPath: Self.linkPath)
+            return nil
+        } catch {
+            return privileged("/bin/rm \(Self.linkPath)")
+        }
+    }
+
+    /// Single-quotes a path for the shell.
+    private static func quoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func privileged(_ command: String) -> String? {
+        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let source = "do shell script \"\(escaped)\" with prompt \"Drobo DriverKit wants to change the drobo command in /usr/local/bin.\" with administrator privileges"
+        var error: NSDictionary?
+        NSAppleScript(source: source)?.executeAndReturnError(&error)
+        guard let error else { return nil }
+        if (error[NSAppleScript.errorNumber] as? Int) == -128 { return "" }
+        return error[NSAppleScript.errorMessage] as? String ?? "The system refused the change."
+    }
+}

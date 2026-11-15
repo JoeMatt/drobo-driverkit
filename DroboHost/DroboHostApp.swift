@@ -14,6 +14,7 @@ struct DroboHostApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var dashboard = DashboardModel()
     @StateObject private var updates = UpdateChecker()
+    @StateObject private var commandLine = CommandLineTool()
     @AppStorage("showMenuBarItem") private var showMenuBarItem = true
     @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
 
@@ -30,12 +31,17 @@ struct DroboHostApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Drobo DriverKit") { About.show() }
             }
+            CommandGroup(after: .appInfo) {
+                Button(commandLine.actionTitle) { commandLine.performAction() }
+                    .disabled(!commandLine.canAct)
+            }
         }
 
         MenuBarExtra(isInserted: $showMenuBarItem) {
             MenuBarContent()
                 .environmentObject(dashboard)
                 .environmentObject(updates)
+                .environmentObject(commandLine)
         } label: {
             Image(systemName: dashboard.menuBarSymbol)
         }
@@ -44,6 +50,7 @@ struct DroboHostApp: App {
             PreferencesView()
                 .environmentObject(dashboard)
                 .environmentObject(updates)
+                .environmentObject(commandLine)
         }
     }
 }
@@ -124,6 +131,7 @@ enum About {
 struct MenuBarContent: View {
     @EnvironmentObject private var dashboard: DashboardModel
     @EnvironmentObject private var updates: UpdateChecker
+    @EnvironmentObject private var commandLine: CommandLineTool
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -152,6 +160,8 @@ struct MenuBarContent: View {
             NSApp.activate(ignoringOtherApps: true)
         }
         SettingsLink { Text("Settings…") }
+        Button(commandLine.actionTitle) { commandLine.performAction() }
+            .disabled(!commandLine.canAct)
         Button("About Drobo DriverKit") { About.show() }
         Divider()
         Button("Quit Completely") {
@@ -165,6 +175,7 @@ struct MenuBarContent: View {
 struct PreferencesView: View {
     @EnvironmentObject private var dashboard: DashboardModel
     @EnvironmentObject private var updates: UpdateChecker
+    @EnvironmentObject private var commandLine: CommandLineTool
     @AppStorage("showMenuBarItem") private var showMenuBarItem = true
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
@@ -205,6 +216,13 @@ struct PreferencesView: View {
             }
             Text(updates.status.isEmpty ? "Version \(UpdateChecker.version)" : updates.status)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            LabeledContent("Command line tool") {
+                Button(commandLine.actionTitle) { commandLine.performAction() }
+                    .disabled(!commandLine.canAct)
+            }
+            Text("`drobo` shows the Drobo's status in a terminal, for scripts and status lines. " + commandLine.statusText)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .onAppear { commandLine.refresh() }
             Text("Updates are not installed automatically yet: each copy of this app is built and signed by its owner. To update, pull the new source and rebuild.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
