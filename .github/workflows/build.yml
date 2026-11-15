@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i driverkit
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      # A compile check only. An unsigned driver extension cannot be loaded by macOS,
+      # so no artifact is published from this job.
+      - name: Build
+        run: |
+          xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost \
+            -configuration Release -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build

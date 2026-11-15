@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>OSBundleUsageDescription</key>
+	<string>Connects the Drobo 8D Thunderbolt storage array.</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>Drobo8D</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleIdentifierKernel</key>
+			<string>com.apple.iokit.IOSCSIParallelFamily</string>
+			<key>IOClass</key>
+			<string>IOUserSCSIParallelInterfaceController</string>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
+			<key>IOUserClass</key>
+			<string>DroboSCSIController</string>
+			<key>IOUserServerName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<!-- vendor 0x4452 ("DR"), device 0x3844 ("8D") -->
+			<key>IOPCIMatch</key>
+			<string>0x38444452</string>
+			<key>IOPCITunnelCompatible</key>
+			<true/>
+			<key>IOPCIPauseCompatible</key>
+			<true/>
+			<key>Protocol Characteristics</key>
+			<dict>
+				<key>Physical Interconnect</key>
+				<string>SCSI</string>
+				<key>Physical Interconnect Location</key>
+				<string>External</string>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

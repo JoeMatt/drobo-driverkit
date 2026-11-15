@@ -1,0 +1,212 @@
+# drobo-driverkit
+
+A macOS driver for the **Drobo 8D** Thunderbolt array on **Apple silicon** Macs.
+
+Drobo, Inc. is gone. Their Thunderbolt driver is a kernel extension that modern Macs only load
+if you lower the machine's security settings, and it will stop working entirely as Apple removes
+kext support. This project replaces it with a DriverKit driver extension: no kext, no Reduced
+Security, System Integrity Protection stays on.
+
+Other open projects cover Drobo's network (NAS) models. As far as we know this is the only one
+for the direct-attached Thunderbolt units.
+
+## Status
+
+| | |
+|---|---|
+| Drobo 8D over Thunderbolt 3 | Works |
+| Reading your volumes | **Works** (HFS+ volumes mount read-only) |
+| Writing | **Not yet.** The driver refuses every write so it cannot damage a volume |
+| APFS volumes on the Drobo | Detected, but macOS will not mount APFS from a write-protected disk |
+| Drobo Dashboard (health, capacity, settings) | Not supported |
+| Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
+| Intel Macs | Not supported; use Drobo's original driver there |
+| A ready-to-run download | **Not available yet**, see below |
+
+In short: today this is a way to **get your data off** a Drobo 8D using a current Mac.
+
+## Why there is no download yet
+
+Apple controls which developers may ship hardware drivers. Anyone with a paid developer account
+can build and run a driver like this one on **their own** Macs. Shipping one build that works on
+**everyone's** Mac needs Apple to grant extra "distribution" entitlements for this specific
+hardware. That request is pending. Until it is granted, a notarized download cannot exist, no
+matter who builds it.
+
+So for now you build and sign it yourself. It takes about 30 minutes and you do it once a year.
+
+## What you need
+
+- An Apple silicon Mac (M1 or later) running macOS 14 or later.
+- A Drobo 8D and a real **Thunderbolt 3** cable (lightning-bolt logo). A plain USB-C cable looks
+  the same and will not work.
+- A paid **Apple Developer Program** membership (US $99/year). A free Apple ID is not enough;
+  Apple does not allow driver capabilities on free accounts.
+- [Xcode](https://apps.apple.com/app/xcode/id497799835) (free, from the Mac App Store).
+- [Homebrew](https://brew.sh) to install one small tool.
+
+## Install, step by step
+
+You do not need to know how to program. You will copy a few commands into Terminal and click
+through Apple's developer website.
+
+### 1. Get the tools
+
+Install Xcode from the App Store and open it once so it finishes setting up. Then, in Terminal:
+
+```bash
+brew install xcodegen
+```
+
+```bash
+git clone https://github.com/JoeMatt/drobo-driverkit.git
+```
+
+```bash
+cd drobo-driverkit
+```
+
+### 2. Pick your own app identifier
+
+Apple needs every app to have a unique ID, so you cannot reuse ours. Choose a prefix that is
+yours, for example `com.yourname`. Also find your **Team ID**: sign in at
+[developer.apple.com/account](https://developer.apple.com/account), open **Membership details**,
+and copy the 10-character Team ID.
+
+Open `project.yml` in any text editor and change three lines:
+
+| Line | Change to |
+|---|---|
+| `DEVELOPMENT_TEAM: S32Z3HMYVQ` | your Team ID |
+| `PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit` | `com.yourname.DroboDriverKit` |
+| `PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.driver` | `com.yourname.DroboDriverKit.driver` |
+
+The second ID must be the first one plus `.driver`.
+
+### 3. Register your Mac and the two identifiers with Apple
+
+On [developer.apple.com/account](https://developer.apple.com/account), open
+**Certificates, Identifiers & Profiles**.
+
+1. **Devices** → **+** → platform macOS. Enter any name and your Mac's Provisioning UDID. To find
+   it: Apple menu → About This Mac → More Info → System Report → Hardware → *Provisioning UDID*.
+2. **Identifiers** → **+** → App IDs → App. Bundle ID: Explicit, `com.yourname.DroboDriverKit`.
+   Tick **System Extension**. Save.
+3. **Identifiers** → **+** again. Bundle ID `com.yourname.DroboDriverKit.driver`. Tick:
+   - **DriverKit**
+   - **DriverKit PCI (development)**
+   - **DriverKit Family SCSI Controller (development)**
+
+   Save.
+
+If you cannot find **DriverKit PCI (development)** in the list, your account does not have it
+and you will need to ask Apple Developer Support to enable it. Without it the build will not
+sign.
+
+### 4. Build
+
+Open Xcode → Settings → Accounts and make sure your Apple ID is signed in. Then, in Terminal,
+from the `drobo-driverkit` folder:
+
+```bash
+xcodegen generate
+```
+
+```bash
+xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost -configuration Release -derivedDataPath build -allowProvisioningUpdates build
+```
+
+It should end with `** BUILD SUCCEEDED **`. If it complains about a provisioning profile or an
+entitlement, re-check step 3: the capability names must match exactly.
+
+### 5. Install
+
+The app must live in your Applications folder or macOS will refuse to load the driver.
+
+```bash
+cp -R build/Build/Products/Release/DroboDriverKit.app /Applications/
+```
+
+1. Open **DroboDriverKit** from Applications and click **Activate**.
+2. macOS says a system extension was blocked. Open **System Settings → General → Login Items &
+   Extensions → Driver Extensions** and switch **DroboDriverKit** on.
+3. Back in the app it should say **Done.**
+
+That approval is the normal consent prompt for any driver. It does not lower your Mac's
+security.
+
+### 6. Connect the Drobo
+
+Power the Drobo on, wait for it to finish starting (a few minutes, until the lights settle),
+then plug in the Thunderbolt cable. Its volumes appear in Finder within a few seconds.
+
+If macOS ever says *"The disk you attached was not readable by this computer"*, click
+**Ignore**. **Never click Initialize**, and do not run First Aid on these disks.
+
+## Updating, and the yearly renewal
+
+Apple's development signing lasts one year. When it expires the driver stops loading; repeat
+steps 4 and 5 to renew. Do the same to install a newer version of this project:
+`git pull`, rebuild, copy to Applications, eject the Drobo's volumes, click **Activate** again.
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| The Drobo does not appear under System Information → Thunderbolt | It is the cable, the port, or the Drobo is still starting up. No driver can help until it shows there. |
+| Activate says "will complete after a restart" | Restart the Mac with the Drobo plugged in. |
+| Activate fails with an entitlement or signature error | The identifiers in step 3 do not match `project.yml`, or a capability is missing. |
+| The Driver Extensions switch turned itself off | Turn it back on, then unplug and replug the Drobo. |
+| An APFS volume on the Drobo will not mount | Expected while the driver is read-only. |
+
+To see what the driver is doing:
+
+```bash
+ioreg -r -c IOUserSCSIParallelInterfaceController -l -w0 | grep DroboStatus
+```
+
+## Removing it
+
+Open DroboDriverKit and click **Deactivate**, then delete the app from Applications.
+
+## Other models
+
+The driver only attaches to the 8D (PCI ID `4452:3844`). Drobo's own driver also handled a
+second ID, `4452:5570`, which is probably the 5D-family Thunderbolt units, with the same
+protocol. Nobody has tried one with this driver. If you have one and are comfortable testing
+read-only, add a second personality with `IOPCIMatch` `0x55704452` to `DroboDriver/Info.plist`
+and open an issue with what happens.
+
+## For developers
+
+- [Protocol notes](docs/01-protocol-reverse-engineering.md): BAR layout, the `DroboPort`
+  shared-memory structure, the self-describing doorbell tables, request and response formats,
+  measurements from real hardware, and the SCSIControllerDriverKit pitfalls hit along the way.
+- [Feasibility and entitlements](docs/02-feasibility-and-entitlements.md): the signing paths
+  and what each needs from Apple.
+
+Layout:
+
+- `DroboHost/`: SwiftUI app whose only job is to activate the driver extension.
+- `DroboDriver/`: the dext, an `IOUserSCSIParallelInterfaceController` on `IOPCIDevice`.
+  `DroboProtocol.h` holds the wire structures.
+- `project.yml`: [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is
+  generated from it.
+- `.github/workflows/build.yml`: compile check on every push.
+- `.github/workflows/release.yml`: Developer ID + notarization pipeline. Dormant and unrun until
+  Apple grants the distribution entitlements.
+
+Compile without signing:
+
+```bash
+xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+```
+
+Roadmap: the write path, the passthrough
+channel so Drobo Dashboard's vendor commands can work, sleep/wake handling.
+
+## Disclaimer
+
+This is an independent interoperability project, not affiliated with or endorsed by Drobo, Inc.
+or its successors. It contains no Drobo code. It talks to hardware that holds your data: keep a
+backup, and use it at your own risk. Licensed under the [MIT License](LICENSE).

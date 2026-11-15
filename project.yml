@@ -1,0 +1,56 @@
+name: DroboDriverKit
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: S32Z3HMYVQ
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.14.0"
+    CURRENT_PROJECT_VERSION: "14"
+targets:
+  DroboHost:
+    type: application
+    platform: macOS
+    sources:
+      - DroboHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit
+        PRODUCT_NAME: DroboDriverKit
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        CODE_SIGN_ENTITLEMENTS: DroboHost/DroboHost.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "5.0"
+    dependencies:
+      - target: DroboDriver
+        embed: true
+        codeSign: false
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/SystemExtensions
+  DroboDriver:
+    type: driver-extension
+    platform: macOS
+    sources:
+      - DroboDriver
+    settings:
+      base:
+        SDKROOT: driverkit
+        DRIVERKIT_DEPLOYMENT_TARGET: "23.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.driver
+        PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
+        INFOPLIST_FILE: DroboDriver/Info.plist
+        CODE_SIGN_ENTITLEMENTS: DroboDriver/DroboDriver.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        CLANG_CXX_LANGUAGE_STANDARD: gnu++20
+        # Apple silicon only: the Drobo's own kext still covers Intel Macs. Never add arm64e,
+        # an arm64e slice breaks loading with SIP on.
+        ARCHS: arm64
+    dependencies:
+      - sdk: DriverKit.framework
+      - sdk: PCIDriverKit.framework
+      - sdk: SCSIControllerDriverKit.framework

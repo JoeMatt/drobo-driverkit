@@ -1,0 +1,86 @@
+//
+//  DroboSCSIController.iig
+//
+//  DriverKit SCSI controller for the Drobo 8D (PCI 0x4452:0x3844 over Thunderbolt).
+//  Read-only: publishes the Drobo's LUNs as write-protected disks. Reads run concurrently
+//  (32 slots, bursts per doorbell) and complete from an MSI handler, with a timer fallback.
+//
+
+#ifndef DroboSCSIController_h
+#define DroboSCSIController_h
+
+#include <Availability.h>
+#include <DriverKit/IOService.iig>
+#include <DriverKit/IOInterruptDispatchSource.iig>
+#include <DriverKit/IOTimerDispatchSource.iig>
+#include <SCSIControllerDriverKit/IOUserSCSIParallelInterfaceController.iig>
+
+class DroboSCSIController : public IOUserSCSIParallelInterfaceController
+{
+public:
+    virtual bool init() override;
+    virtual void free() override;
+
+    virtual kern_return_t Start(IOService * provider) override;
+    virtual kern_return_t Stop(IOService * provider) override;
+
+    virtual kern_return_t UserReportHBAHighestLogicalUnitNumber(uint64_t * value) override;
+    virtual kern_return_t UserDoesHBASupportSCSIParallelFeature(uint32_t theValue, bool * result) override;
+    virtual kern_return_t UserInitializeTargetForID(SCSITargetIdentifier targetID) override;
+    virtual kern_return_t UserDoesHBAPerformAutoSense(bool * result) override;
+    virtual kern_return_t UserDoesHBASupportMultiPathing(bool * result) override;
+
+    virtual kern_return_t UserAbortTaskRequest(uint64_t theT, uint64_t theL, uint64_t theQ, uint32_t * response) override;
+    virtual kern_return_t UserAbortTaskSetRequest(uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserClearACARequest(uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserClearTaskSetRequest(uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserLogicalUnitResetRequest(uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserTargetResetRequest(uint64_t theT, uint32_t * response) override;
+
+protected:
+    virtual kern_return_t UserReportInitiatorIdentifier(uint64_t * id) override;
+    virtual kern_return_t UserReportHighestSupportedDeviceID(uint64_t * id) override;
+    virtual kern_return_t UserReportMaximumTaskCount(uint32_t * count) override;
+    virtual kern_return_t UserDoesHBAPerformDeviceManagement(bool * result) override;
+    virtual kern_return_t UserInitializeController() override;
+    virtual kern_return_t UserStartController() override;
+
+    virtual kern_return_t UserProcessParallelTask(SCSIUserParallelTask parallelRequest,
+                                                  uint32_t * response,
+                                                  OSAction * completion) override;
+
+    virtual kern_return_t UserGetDMASpecification(uint64_t * maxTransferSize,
+                                                  uint32_t * alignment,
+                                                  uint8_t * numAddressBits,
+                                                  DMAOutputSegmentType * segmentType) override;
+
+    virtual kern_return_t UserMapHBAData(uint32_t * uniqueTaskID) override;
+
+    virtual kern_return_t UserMapBundledParallelTaskCommandAndResponseBuffers(
+        IOBufferMemoryDescriptor * parallelCommandIOMemoryDescriptor,
+        IOBufferMemoryDescriptor * parallelResponseIOMemoryDescriptor) override;
+
+    virtual void UserProcessBundledParallelTasks(const uint16_t parallelRequestSlotIndices[kMaxBundledParallelTasks],
+                                                 uint16_t parallelRequestSlotIndicesCount,
+                                                 OSAction * completion) override;
+
+    // Dispatch-source handlers, delivered on the serial I/O queue.
+    virtual void HandleInterrupt(OSAction * action, uint64_t count, uint64_t time)
+        TYPE(IOInterruptDispatchSource::InterruptOccurred);
+    virtual void HandleTimer(OSAction * action, uint64_t time)
+        TYPE(IOTimerDispatchSource::TimerOccurred);
+
+    // Local (in-process) helpers.
+    bool HandleTask(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response) LOCALONLY;
+    bool QueueRead(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response,
+                   uint32_t lun, uint64_t lba, uint32_t blocks) LOCALONLY;
+    void Pump() LOCALONLY;
+    uint32_t ProcessCompletions() LOCALONLY;
+    void CompleteSlot(uint32_t index, uint32_t taskStatus, uint32_t serviceResponse, uint64_t bytes,
+                      uint8_t senseKey, uint8_t asc) LOCALONLY;
+    void FailAllSlots(const char * stage) LOCALONLY;
+    void ArmTimer() LOCALONLY;
+    uint64_t CopyToTask(const SCSIUserParallelTask * task, const void * bytes, uint64_t length) LOCALONLY;
+};
+
+#endif /* DroboSCSIController_h */
