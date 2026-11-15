@@ -21,6 +21,7 @@ targets:
         PRODUCT_NAME: DroboDriverKit
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Joseph Mattiello"
         CODE_SIGN_ENTITLEMENTS: DroboHost/DroboHost.entitlements
         ENABLE_HARDENED_RUNTIME: YES
@@ -34,12 +35,30 @@ targets:
           mkdir -p "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
           git -C "$SRCROOT" rev-parse HEAD > "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/commit.txt" 2>/dev/null || true
     dependencies:
+      - target: DroboCLI
+        embed: true
+        copy:
+          destination: executables
       - target: DroboDriver
         embed: true
         codeSign: false
         copy:
           destination: wrapper
           subpath: Contents/Library/SystemExtensions
+  # `drobo`, the read-only status command. Embedded in the app at Contents/MacOS/drobo.
+  DroboCLI:
+    type: tool
+    platform: macOS
+    sources:
+      - DroboCLI
+      - DroboHost/DroboMonitor.swift
+      - DroboHost/Demo.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.cli
+        PRODUCT_NAME: drobo
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "5.0"
   DroboDriver:
     type: driver-extension
     platform: macOS

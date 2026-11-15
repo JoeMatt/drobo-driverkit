@@ -31,6 +31,29 @@ for the direct-attached Thunderbolt units.
 In short: today this is a way to **get your data off** a Drobo 8D using a current Mac, and to
 see what state the unit is in while you do.
 
+## Command line
+
+The app includes `drobo`, a read-only status command for shell prompts, tmux or vim status
+lines, scripts and dashboards. It reads what the driver publishes and never sends anything to
+the Drobo.
+
+```bash
+ln -s /Applications/DroboDriverKit.app/Contents/MacOS/drobo /usr/local/bin/drobo
+
+drobo                       # Drobo: healthy · 7.4 TB of 34.4 TB used (22%) · 9/9 drives
+drobo --short               # Drobo ok 22%
+drobo all                   # device, every bay, every volume
+drobo drive 3               # one bay
+drobo volume "Time Machine" # one volume, by name or unit number
+drobo get percent           # one bare value; `drobo keys` lists them
+drobo all --json            # for dashboards
+drobo --watch 5             # redraw every 5 seconds
+```
+
+The exit status is 0 when healthy, 1 for a warning or a rebuild, 2 when the Drobo needs
+attention and 3 when it is not connected, so `drobo >/dev/null || notify` works in scripts.
+`--demo healthy` or `--demo rebuilding` prints made-up data without a Drobo.
+
 ## Why there is no download yet
 
 Apple controls which developers may ship hardware drivers. Anyone with a paid developer account

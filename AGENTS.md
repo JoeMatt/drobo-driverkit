@@ -11,6 +11,7 @@ work on Apple silicon Macs without a kext. Layout:
 | Path | What |
 |---|---|
 | `DroboDriver/` | The dext. `DroboSCSIController.*` is the SCSI controller; `DroboUserClient.*` is the app's command channel; `DroboProtocol.h` holds every wire structure and constant |
+| `DroboCLI/` | The `drobo` command: read-only status for scripts. Shares `DroboMonitor.swift` with the app |
 | `DroboHost/` | SwiftUI host app. `DroboHostApp.swift` is UI, `DroboMonitor.swift` decodes what the driver publishes and sends commands, `AppServices.swift` is updates, login item, notifications |
 | `docs/01-…` | Protocol notes. Sections 1–10 are static analysis of the original kext; section 11 is what was observed on real hardware; section 12 lists open questions |
 | `docs/02-…` | Signing and entitlement paths |

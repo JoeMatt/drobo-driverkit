@@ -34,3 +34,13 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
    Needs the SGL buffer mode (flag `0x10`) for the task's data buffer.
 10. **Real auto-update** [app]. Blocked on Apple granting distribution entitlements. Then:
     integrate an updater with release and nightly channels and add a nightly build workflow.
+11. **More than one Drobo at a time** [app]. The driver keeps all state per device, so each
+    attached unit should get its own controller instance (never tried with two units). The app
+    and the `drobo` command read only the first controller they find, and match volumes to
+    units by LUN number alone. Key everything by controller (registry entry ID or serial) and
+    add a device switcher to the dashboard and a `--device` option to the command.
+12. **Drobo volume icons in Finder** [app, driver, needs hardware]. Drobo Dashboard gave mounted
+    volumes a Drobo-styled disk icon with a light bar showing how full the volume is. Two routes
+    to investigate: a custom `.VolumeIcon.icns` written to the volume (needs write access, so not
+    possible on the read-only default), or an icon the driver supplies for its disks. Decide
+    which is feasible under DriverKit before building either.
