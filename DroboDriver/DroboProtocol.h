@@ -176,7 +176,13 @@ _Static_assert(sizeof(DroboSGLEntry) == 0x10, "SGL entry layout");
 
 enum DroboRequestKind : uint32_t {
     kDroboRequestKindBlockIO     = 1,
+    kDroboRequestKindSystem      = 2,     // header + one u32 command word, total length 0x28
     kDroboRequestKindPassthrough = 3,
+};
+
+enum DroboSystemCommand : uint32_t {
+    kDroboSystemCommandStartStop = 3,     // sent by the kext for START STOP UNIT
+    kDroboSystemCommandFlush     = 5,     // sent for SYNCHRONIZE CACHE (and WRITE BUFFER)
 };
 
 enum DroboBlockOperation : uint32_t {

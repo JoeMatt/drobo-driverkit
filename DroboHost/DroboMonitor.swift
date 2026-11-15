@@ -1,3 +1,4 @@
+import CryptoKit
 import DiskArbitration
 import Foundation
 import IOKit
@@ -59,6 +60,7 @@ enum DroboCommand: UInt32 {
     case blink = 2
     case standby = 3
     case rename = 4
+    case setOptions = 5
 }
 
 struct DroboSnapshot {
@@ -78,6 +80,11 @@ struct DroboSnapshot {
     var writableMask: UInt32 = 0
     var lunBlocks: [UInt64] = []
     var dualDiskRedundancy: Bool?
+    var optionFlags: UInt64 = 0
+    var commands: UInt64 = 0
+    var lastCommandResult = 0
+    var flushForwarding = false
+    var flushes: UInt64 = 0
     var spinDownMinutes: Int?
 
     var healthAvailable = false
@@ -140,6 +147,10 @@ enum DroboMonitor {
             snapshot.writes = UInt64(number(status["Writes"]))
             snapshot.writeBytes = (status["WriteBytes"] as? NSNumber)?.uint64Value ?? 0
             snapshot.writableMask = (status["WritableMask"] as? NSNumber)?.uint32Value ?? 0
+            snapshot.commands = UInt64(number(status["Commands"]))
+            snapshot.lastCommandResult = number(status["LastCommandSRB"])
+            snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
+            snapshot.flushes = UInt64(number(status["Flushes"]))
             if let data = status["LUNBlocks"] as? Data {
                 snapshot.lunBlocks = data.withUnsafeBytes { raw in
                     (0..<(data.count / 8)).map { raw.loadUnaligned(fromByteOffset: $0 * 8, as: UInt64.self) }
@@ -174,6 +185,7 @@ enum DroboMonitor {
         if let page = payload(health["Options2"]), page.count >= 10 {
             // flags u64 (bit 0 dual disk redundancy, bit 1 spin-down enabled), minutes u16.
             let flags = be64(page, 0)
+            snapshot.optionFlags = flags
             snapshot.dualDiskRedundancy = flags & 0x1 != 0
             snapshot.spinDownMinutes = flags & 0x2 != 0 ? Int(be16(page, 8)) : 0
         }
@@ -347,6 +359,61 @@ enum DroboMonitor {
         case kIOReturnNotReady: return "The Drobo is not ready yet."
         default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
         }
+    }
+
+    /// End-to-end check of the write path on one mounted, writable volume: writes 64 MB of
+    /// random data bypassing the file cache, forces it to the Drobo, reads it back from the
+    /// Drobo and compares hashes. The test file is removed afterwards. Returns a result line.
+    static func writeTest(on volume: URL) -> String {
+        let path = volume.appendingPathComponent(".drobo-write-test-\(UUID().uuidString).bin").path
+        let chunkSize = 1 << 20
+        let chunks = 64
+        defer { unlink(path) }
+
+        let fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0o600)
+        guard fd >= 0 else { return "Write test failed: could not create a file (\(String(cString: strerror(errno))))." }
+        _ = fcntl(fd, F_NOCACHE, 1)
+        var written = SHA256()
+        let start = Date()
+        for _ in 0..<chunks {
+            var chunk = [UInt8](repeating: 0, count: chunkSize)
+            _ = SecRandomCopyBytes(kSecRandomDefault, chunkSize, &chunk)
+            written.update(data: chunk)
+            let result = chunk.withUnsafeBytes { write(fd, $0.baseAddress, chunkSize) }
+            if result != chunkSize {
+                close(fd)
+                return "Write test failed while writing (\(String(cString: strerror(errno))))."
+            }
+        }
+        if fcntl(fd, F_FULLFSYNC) != 0 {
+            close(fd)
+            return "Write test failed: the Drobo did not confirm the flush (\(String(cString: strerror(errno))))."
+        }
+        let writeSeconds = Date().timeIntervalSince(start)
+        close(fd)
+
+        let readFD = open(path, O_RDONLY)
+        guard readFD >= 0 else { return "Write test failed: could not reopen the file." }
+        defer { close(readFD) }
+        _ = fcntl(readFD, F_NOCACHE, 1)
+        var readBack = SHA256()
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        var total = 0
+        let readStart = Date()
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(readFD, $0.baseAddress, chunkSize) }
+            if count < 0 { return "Write test failed while reading back (\(String(cString: strerror(errno))))." }
+            if count == 0 { break }
+            readBack.update(data: buffer[0..<count])
+            total += count
+        }
+        let readSeconds = Date().timeIntervalSince(readStart)
+        guard total == chunkSize * chunks, written.finalize() == readBack.finalize() else {
+            return "WRITE TEST FAILED: the data read back does not match what was written. Turn writing off for this volume."
+        }
+        let megabytes = Double(chunks)
+        return String(format: "Write test passed: 64 MB written at %.0f MB/s and read back identical at %.0f MB/s.",
+                      megabytes / max(writeSeconds, 0.001), megabytes / max(readSeconds, 0.001))
     }
 
     // MARK: Registry access

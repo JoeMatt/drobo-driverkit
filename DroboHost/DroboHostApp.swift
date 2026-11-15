@@ -34,6 +34,7 @@ final class DashboardModel: ObservableObject {
     private var lastSample = Date()
     private var rebuildStart: (date: Date, count: UInt32)?
     private var writableSeeded = false
+    private var awaitingCommand: (count: UInt64, name: String)?
 
     func start() {
         refresh()
@@ -71,6 +72,14 @@ final class DashboardModel: ObservableObject {
         } else {
             rebuildStart = nil
             rebuildETA = ""
+        }
+
+        // Report how the Drobo answered the last command we sent.
+        if let awaiting = awaitingCommand, latest.commands >= awaiting.count {
+            message = latest.lastCommandResult == 1
+                ? "\(awaiting.name): the Drobo accepted the command."
+                : "\(awaiting.name): the Drobo rejected the command (code \(latest.lastCommandResult))."
+            awaitingCommand = nil
         }
 
         snapshot = latest
@@ -114,20 +123,53 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    func blink() {
-        message = DroboMonitor.send(.blink) ?? "The Drobo's lights should be blinking."
+    /// Sends a management command and remembers to report the Drobo's answer.
+    private func command(_ command: DroboCommand, argument: UInt32 = 0, name: String = "", label: String) {
+        if let failure = DroboMonitor.send(command, argument: argument, name: name) {
+            message = failure
+        } else {
+            message = "\(label): sent…"
+            awaitingCommand = (snapshot.commands + 1, label)
+        }
     }
 
+    func blink() { command(.blink, label: "Blink lights") }
+
     func rename(to name: String) {
-        let utc = UInt32(Date().timeIntervalSince1970)
-        message = DroboMonitor.send(.rename, argument: utc, name: name) ?? "Name sent. It updates here within a few seconds."
+        command(.rename, argument: UInt32(Date().timeIntervalSince1970), name: name, label: "Rename")
+    }
+
+    /// Changes dual disk redundancy and the spin-down delay, keeping the Drobo's other flags.
+    func setOptions(dualRedundancy: Bool, spinDownMinutes: Int) {
+        var flags = UInt32(truncatingIfNeeded: snapshot.optionFlags) & 0xFFFC
+        if dualRedundancy { flags |= 0x1 }
+        if spinDownMinutes > 0 { flags |= 0x2 }
+        command(.setOptions, argument: flags | UInt32(max(0, min(spinDownMinutes, 600))) << 16, label: "Settings")
+    }
+
+    /// Runs the write self-test on the first mounted volume that allows writing.
+    func writeTest() {
+        guard let lun = luns.first(where: { $0.writable && $0.isMounted }),
+              let volume = volumes.first(where: { $0.lun == lun.id }) else {
+            message = "Allow writes on a mounted volume first."
+            return
+        }
+        busy = true
+        message = "Testing writes on \(volume.name)…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = DroboMonitor.writeTest(on: volume.id)
+            DispatchQueue.main.async {
+                self?.message = result
+                self?.busy = false
+            }
+        }
     }
 
     /// Ejects everything, then asks the Drobo to flush its caches and power down.
     func shutDown() {
         busy = true
         ejectAll { [weak self] in
-            self?.message = DroboMonitor.send(.standby) ?? "Shutdown requested. Wait for the Drobo's lights to go out before unplugging."
+            self?.command(.standby, label: "Shut down")
             self?.busy = false
         }
     }
@@ -191,6 +233,9 @@ struct ContentView: View {
     @State private var confirmShutdown = false
     @State private var confirmWritable = false
     @State private var showDriver = false
+    @State private var showSettings = false
+    @State private var editDual = false
+    @State private var editSpin = 0
 
     var body: some View {
         let snapshot = dashboard.snapshot
@@ -238,6 +283,7 @@ struct ContentView: View {
         } message: {
             Text("All Drobo volumes are ejected first, then the Drobo flushes its caches and powers down.")
         }
+        .sheet(isPresented: $showSettings) { settingsSheet }
         .confirmationDialog("Change which volumes can be written?", isPresented: $confirmWritable) {
             Button("Eject All and Apply") { dashboard.applyWritable() }
             Button("Cancel", role: .cancel) { dashboard.refresh() }
@@ -416,7 +462,52 @@ struct ContentView: View {
                 Button("Shut Down…") { confirmShutdown = true }
             }
             .disabled(dashboard.busy || !dashboard.snapshot.healthAvailable)
+            HStack {
+                Button("Settings…") {
+                    editDual = dashboard.snapshot.dualDiskRedundancy ?? false
+                    editSpin = dashboard.snapshot.spinDownMinutes ?? 0
+                    showSettings = true
+                }
+                .disabled(dashboard.busy || dashboard.snapshot.dualDiskRedundancy == nil)
+                Button("Test Writing…") { dashboard.writeTest() }
+                    .disabled(dashboard.busy || !dashboard.luns.contains { $0.writable && $0.isMounted })
+                    .help("Writes and reads back 64 MB on a writable volume to check the write path")
+            }
         }
+    }
+
+    // MARK: Settings
+
+    private var settingsSheet: some View {
+        let snapshot = dashboard.snapshot
+        let unsafe = snapshot.isRebuilding || (snapshot.statusFlags ?? 0) & 0x40 != 0
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Drobo Settings").font(.headline)
+            Toggle("Dual disk redundancy", isOn: $editDual)
+            Text("Survives two drive failures at the cost of capacity. Changing it makes the Drobo rearrange all data, which can take days.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("Spin drives down after", selection: $editSpin) {
+                Text("Never").tag(0)
+                ForEach([5, 10, 15, 30, 60, 120], id: \.self) { Text("\($0) minutes").tag($0) }
+                if ![0, 5, 10, 15, 30, 60, 120].contains(editSpin) { Text("\(editSpin) minutes").tag(editSpin) }
+            }
+            if unsafe {
+                Label("Settings cannot be changed while the Drobo is rebuilding or has no redundancy.", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showSettings = false }
+                Button("Apply") {
+                    dashboard.setOptions(dualRedundancy: editDual, spinDownMinutes: editSpin)
+                    showSettings = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(unsafe)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 
     // MARK: Driver
@@ -441,7 +532,7 @@ struct ContentView: View {
                 if snapshot.driverPresent {
                     Text("↓ \(DashboardModel.bytes(UInt64(dashboard.readRate)))/s")
                     Text("↑ \(DashboardModel.bytes(UInt64(dashboard.writeRate)))/s")
-                    Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.errors) errors")
+                    Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.flushes) flushes · \(snapshot.errors) errors")
                 } else {
                     Text("not running")
                 }

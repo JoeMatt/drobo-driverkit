@@ -648,6 +648,25 @@ Pages verified on the 8D (firmware 4.2.3):
   in "terminating for upgrade". `Stop` now quiesces asynchronously and a five-second watchdog
   completes it if the cancel handlers have not all run.
 
+### 11.7 System-control channel, sleep/wake, settings (driver v0.22.0, 2026-11-15)
+
+Decoded from the kext and implemented; **none of this section has run on hardware yet.**
+
+- **System-control request** (`SysControlChannel::BuildDroboRequest` @ `0xbd2a`): the 0x20-byte
+  header with kind `2` and total length `0x28`, followed by one u32 command word at `+0x20`.
+  No data phase. Command `5` is sent for SYNCHRONIZE CACHE and WRITE BUFFER, `3` for START STOP
+  UNIT. Request list `DroboPort[0x28]`, response list `DroboPort[0x2C]`, doorbell In[3]
+  (`0x04000000`), completion Out[2] (`0x400`), transaction ID 0. The driver now forwards
+  SYNCHRONIZE CACHE this way when any LUN is writable, one flush at a time, completing every
+  waiting task when the Drobo answers.
+- **Sleep / wake** (`setPowerState` @ `0x267e`): on sleep each channel waits for its in-flight
+  requests. On wake the kext rings driver-ready (In[5], `0x00010000`), and for interface
+  version >= 6 waits up to 30 x 200 ms for that bit to clear, rewrites Host Interface Version = 1
+  and re-arms the outbound interrupts. The dext does the same from `SetPowerState`.
+- **Settings**: MODE SELECT(10) page `0x7A` sub-page `0x31`, payload flags u64 + spin-down
+  minutes u16 + unused network fields, per drobo-utils' `SetOptions`. Exposed in the app only
+  when the unit is healthy.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

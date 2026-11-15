@@ -63,6 +63,8 @@ struct DroboLUN
 static const uint32_t kHealthPageCount = 9;
 static const uint32_t kHealthPageMax   = 720;       // slot page: 4 + 1 + 9 x 72
 static const uint8_t  kHealthPages[kHealthPageCount] = { 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x30, 0x31 };
+static const uint32_t kSysSlot         = 33;        // request slot for system-control requests
+static const uint32_t kMaxFlushWaiters = 32;
 static const uint32_t kHealthSlot      = 32;        // request slot after the 32 block-I/O slots
 static const uint32_t kHealthDataOffset = 0x3000;   // data area (4 KiB) inside the request buffer
 
@@ -78,6 +80,14 @@ struct DroboSlot
     uint64_t    length;
     bool        isWrite;
     uint64_t    submitTime;         // mach_absolute_time
+    uint64_t    targetID;
+    uint64_t    taskID;
+    OSAction *  completion;
+};
+
+// A SYNCHRONIZE CACHE task waiting for the Drobo to confirm a flush.
+struct DroboFlushWaiter
+{
     uint64_t    targetID;
     uint64_t    taskID;
     OSAction *  completion;
@@ -199,6 +209,23 @@ struct DroboSCSIController_IVars
     uint8_t                    commandSequence;
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
+
+    // Cache flush over the system-control channel. I/O queue only.
+    uint32_t                   sysRequestListOffset;
+    uint32_t                   sysResponseListOffset;
+    bool                       sysAvailable;
+    bool                       sysInflight;
+    uint64_t                   sysSubmitTime;
+    DroboFlushWaiter           flushInflight[kMaxFlushWaiters];
+    uint32_t                   flushInflightCount;
+    DroboFlushWaiter           flushPending[kMaxFlushWaiters];
+    uint32_t                   flushPendingCount;
+    uint64_t                   statFlushes;
+
+    // Power.
+    bool                       asleep;
+    bool                       wakeTableOK;
+    uint64_t                   statWakes;
 
     uint32_t                   nextTransactionID;
     uint32_t                   nextTaskID;
@@ -478,6 +505,10 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     }
     DictSetNumber(status, "Inflight", iv->inflight);
     DictSetNumber(status, "Pending", iv->pendingCount);
+    DictSetNumber(status, "Flushes", iv->statFlushes);
+    DictSetNumber(status, "Wakes", iv->statWakes);
+    status->setObject("FlushForwarding", iv->sysAvailable ? kOSBooleanTrue : kOSBooleanFalse);
+    status->setObject("Asleep", iv->asleep ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "WritableMask", iv->writableMask);
     DictSetNumber(status, "Writes", iv->statWrites);
     DictSetNumber(status, "WriteBytes", iv->statWriteBytes);
@@ -526,6 +557,8 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
 // Doorbell bits, as published by the device's own interrupt tables (verified at bring-up).
 static const uint32_t kInBitSCSIRequest   = 0x00020000;   // In[0]
 static const uint32_t kInBitTMRequest     = 0x08000000;   // In[4]
+static const uint32_t kInBitSysRequest    = 0x04000000;   // In[3]
+static const uint32_t kInBitDriverReady   = 0x00010000;   // In[5]
 static const uint32_t kOutBitSCSIResponse = 0x00000002;   // Out[0]
 static const uint32_t kOutBitTMResponse   = 0x00000800;   // Out[1]
 static const uint32_t kOutBitSysResponse  = 0x00000400;   // Out[2]
@@ -772,6 +805,25 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
             Port32(iv, out1 + 0x14) == kDroboRegOutgoingDoorbellCause && Port32(iv, out1 + 0x1C) == kOutBitTMResponse &&
             Port32(iv, out1 + 0x4C) == ~kOutBitTMResponse && Port32(iv, out1 + 0x50) == kDroboRegOpSet;
         iv->healthSlotCount = 8;
+    }
+
+    // System-control channel (cache flush) and the driver-ready doorbell used on wake.
+    iv->sysRequestListOffset  = Port32(iv, kDroboPortSysRequestOffset);
+    iv->sysResponseListOffset = Port32(iv, kDroboPortSysResponseOffset);
+    {
+        const uint32_t in3  = intIn + kDroboInterruptTableHeaderSize + 3 * (uint32_t) sizeof(DroboInterruptDef);
+        const uint32_t in5  = intIn + kDroboInterruptTableHeaderSize + 5 * (uint32_t) sizeof(DroboInterruptDef);
+        const uint32_t out2 = intOut + kDroboInterruptTableHeaderSize + 2 * (uint32_t) sizeof(DroboInterruptDef);
+        iv->sysAvailable =
+            iv->sysRequestListOffset <= limit && iv->sysResponseListOffset <= limit &&
+            Port32(iv, iv->sysRequestListOffset) >= 1 &&
+            Port32(iv, in3 + 0x04) == kDroboRegIncomingDoorbellCause && Port32(iv, in3 + 0x0C) == kInBitSysRequest &&
+            Port32(iv, in3 + 0x10) == kDroboRegOpSet &&
+            Port32(iv, out2 + 0x14) == kDroboRegOutgoingDoorbellCause && Port32(iv, out2 + 0x1C) == kOutBitSysResponse &&
+            Port32(iv, out2 + 0x4C) == ~kOutBitSysResponse && Port32(iv, out2 + 0x50) == kDroboRegOpSet;
+        iv->wakeTableOK =
+            Port32(iv, in5 + 0x04) == kDroboRegIncomingDoorbellCause && Port32(iv, in5 + 0x0C) == kInBitDriverReady &&
+            Port32(iv, in5 + 0x10) == kDroboRegOpSet;
     }
 
     // Requests per doorbell: the original driver stops one short of the window size.
@@ -1076,6 +1128,7 @@ enum : uint32_t {
     kDroboAppCommandBlink       = 2,
     kDroboAppCommandStandby     = 3,
     kDroboAppCommandRename      = 4,    // argument = current UTC seconds, name = new name
+    kDroboAppCommandSetOptions  = 5,    // argument = flags (low 16 bits) | spin-down minutes << 16
 };
 
 kern_return_t
@@ -1127,6 +1180,7 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
             }
             case kDroboAppCommandBlink:
             case kDroboAppCommandStandby:
+            case kDroboAppCommandSetOptions:
             case kDroboAppCommandRename: {
                 if (iv->commandPending || iv->commandInflight || !iv->healthAvailable) {
                     result = kIOReturnBusy;
@@ -1148,6 +1202,23 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     iv->commandCDB[2] = 0x7A;
                     iv->commandCDB[3] = 0x05;
                     iv->commandCDB[8] = 42;
+                } else if (command == kDroboAppCommandSetOptions) {
+                    // MODE SELECT(10), page 0x7A sub-page 0x31: flags u64, spin-down minutes
+                    // u16, then network fields this unit does not use (left zero).
+                    iv->commandDataOut = true;
+                    iv->commandLength  = 23;
+                    iv->commandData[0] = 0x7A;
+                    iv->commandData[1] = 0x31;
+                    iv->commandData[3] = 19;
+                    iv->commandData[11] = (uint8_t) (argument & 0xFF);          // flags, low byte
+                    iv->commandData[10] = (uint8_t) ((argument >> 8) & 0xFF);
+                    iv->commandData[12] = (uint8_t) (argument >> 24);           // minutes, big-endian
+                    iv->commandData[13] = (uint8_t) (argument >> 16);
+                    iv->commandCDB[0] = 0x55;
+                    iv->commandCDB[1] = 0x01;
+                    iv->commandCDB[2] = 0x7A;
+                    iv->commandCDB[3] = 0x31;
+                    iv->commandCDB[8] = 23;
                 } else {
                     // Vendor command 0xEA: 0x06 = blink the lights, 0x0D = flush and stand by.
                     iv->commandDataOut = false;
@@ -1414,6 +1485,9 @@ DroboSCSIController::FailAllSlots(const char * stage)
         }
     }
     iv->inflight = 0;
+    CompleteFlushWaiters(iv->flushInflight, &iv->flushInflightCount, false);
+    CompleteFlushWaiters(iv->flushPending, &iv->flushPendingCount, false);
+    iv->sysInflight = false;
     PublishStatus(this, iv);
 }
 
@@ -1438,6 +1512,9 @@ DroboSCSIController::ProcessCompletions()
         }
         if ((out & kOutBitTMResponse) != 0) {
             HealthResponse();
+        }
+        if ((out & kOutBitSysResponse) != 0) {
+            FlushResponse();
         }
         if ((out & kOutBitSCSIResponse) == 0) {
             break;
@@ -1514,7 +1591,7 @@ DroboSCSIController::Pump()
 {
     DroboSCSIController_IVars * iv = ivars;
 
-    while (iv->ready && !iv->dead && iv->pendingCount != 0 && iv->inflight < iv->maxInflight) {
+    while (iv->ready && !iv->dead && !iv->asleep && iv->pendingCount != 0 && iv->inflight < iv->maxInflight) {
         // The Drobo must have consumed the previous burst (In[0] cause bit clear).
         uint32_t cause = 0;
         for (uint32_t spin = 0; spin < 100; spin++) {
@@ -1569,7 +1646,7 @@ DroboSCSIController::Pump()
         if (burst > iv->statPeakBurst)          { iv->statPeakBurst = burst; }
         if (iv->inflight > iv->statPeakInflight) { iv->statPeakInflight = iv->inflight; }
     }
-    if (iv->inflight != 0 || iv->pendingCount != 0 || iv->tmInflight) {
+    if (iv->inflight != 0 || iv->pendingCount != 0 || iv->tmInflight || iv->sysInflight) {
         ArmTimer();
     }
 }
@@ -1660,6 +1737,180 @@ DroboSCSIController::QueueIO(const SCSIUserParallelTask * task, OSAction * compl
     iv->pendingRing[(iv->pendingHead + iv->pendingCount) % kDroboSlotCount] = (uint8_t) index;
     iv->pendingCount++;
     return false;
+}
+
+// MARK: Cache flush (system-control channel)
+
+void
+DroboSCSIController::CompleteFlushWaiters(DroboFlushWaiter * waiters, uint32_t * count, bool success)
+{
+    for (uint32_t i = 0; i < *count; i++) {
+        SCSIUserParallelResponse response;
+        bzero(&response, sizeof(response));
+        response.version                   = kScsiUserParallelTaskResponseCurrentVersion1;
+        response.fTargetID                 = waiters[i].targetID;
+        response.fControllerTaskIdentifier = waiters[i].taskID;
+        response.fCompletionStatus         = kSCSITaskStatus_GOOD;
+        response.fServiceResponse          = kSCSIServiceResponse_TASK_COMPLETE;
+        if (!success) {
+            SetSense(&response, kSenseHardwareError, 0x44, 0x00);
+        }
+        if (waiters[i].completion != nullptr) {
+            ParallelTaskCompletion(waiters[i].completion, response);
+            waiters[i].completion->release();
+            waiters[i].completion = nullptr;
+        }
+        ivars->statCompleted++;
+    }
+    *count = 0;
+}
+
+// Queues a SYNCHRONIZE CACHE. Returns true if `response` is already final.
+bool
+DroboSCSIController::QueueFlush(const SCSIUserParallelTask * task, OSAction * completion,
+                                SCSIUserParallelResponse * response)
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (iv->flushPendingCount >= kMaxFlushWaiters) {
+        response->fCompletionStatus = kSCSITaskStatus_TASK_SET_FULL;
+        return true;
+    }
+    DroboFlushWaiter * waiter = &iv->flushPending[iv->flushPendingCount++];
+    waiter->targetID   = task->fTargetID;
+    waiter->taskID     = task->fControllerTaskIdentifier;
+    waiter->completion = completion;
+    completion->retain();
+    FlushSend();
+    return false;
+}
+
+// Sends one flush for everything waiting, if the channel is free.
+void
+DroboSCSIController::FlushSend()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (!iv->ready || iv->dead || iv->asleep || iv->sysInflight || iv->flushPendingCount == 0) {
+        return;
+    }
+    const uint32_t cause = Reg32(iv, kDroboRegIncomingDoorbellCause);
+    if (cause == 0xFFFFFFFF || (cause & kInBitSysRequest) != 0) {
+        ArmTimer();                                 // retried from the timer
+        return;
+    }
+
+    // System-control request: the 0x20-byte header plus one command word. 5 = flush
+    // (what the original driver sends for SYNCHRONIZE CACHE). No data phase.
+    uint8_t * memory = iv->requestVA + kSysSlot * kDroboSlotSize;
+    bzero(memory, kDroboSlotSize);
+    DroboRequestHeader * header = (DroboRequestHeader *) memory;
+    header->hostDataBusAddress = iv->requestBusAddress + kSysSlot * kDroboSlotSize;
+    header->queueIndex         = 0;
+    header->hostCookie         = 0x464C5553;        // "FLUS"
+    header->totalLength        = 0x28;
+    header->kind               = kDroboRequestKindSystem;
+    *(uint32_t *) (memory + sizeof(DroboRequestHeader)) = kDroboSystemCommandFlush;
+
+    const uint32_t entry = iv->sysRequestListOffset + 8;
+    PortWrite32(iv, entry + 0x0, (uint32_t) header->hostDataBusAddress);
+    PortWrite32(iv, entry + 0x4, 0);
+    PortWrite32(iv, entry + 0x8, header->totalLength);
+    PortWrite32(iv, entry + 0xC, 0);
+    PortWrite32(iv, iv->sysRequestListOffset + 4, 1);
+    RegWrite32(iv, kDroboRegIncomingDoorbellCause, kInBitSysRequest);
+
+    // Everything queued so far is covered by this flush; later arrivals get the next one.
+    memcpy(iv->flushInflight, iv->flushPending, sizeof(DroboFlushWaiter) * iv->flushPendingCount);
+    iv->flushInflightCount = iv->flushPendingCount;
+    iv->flushPendingCount = 0;
+    iv->sysInflight = true;
+    iv->sysSubmitTime = mach_absolute_time();
+    ArmTimer();
+}
+
+void
+DroboSCSIController::FlushResponse()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    const uint32_t base = iv->sysResponseListOffset + kDroboResponseListEntriesOffset;
+    const uint32_t srbResponse = Port32(iv, base + 0x14);
+    const uint32_t scsiStatus  = Port32(iv, base + 0x18);
+    RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitSysResponse);
+    if (!iv->sysInflight) {
+        return;
+    }
+    iv->sysInflight = false;
+    iv->statFlushes++;
+    const bool ok = (srbResponse == kDroboSRBResponseSuccess) && scsiStatus == 0;
+    if (!ok) {
+        DLog("flush failed: srb 0x%x status 0x%x", srbResponse, scsiStatus);
+        iv->statErrors++;
+        iv->lastSRBResponse = srbResponse;
+    }
+    CompleteFlushWaiters(iv->flushInflight, &iv->flushInflightCount, ok);
+    FlushSend();
+}
+
+// MARK: Power
+
+// On wake the original driver rings "driver ready", waits for the firmware to take it,
+// re-announces the host interface version and re-arms the interrupts.
+void
+DroboSCSIController::WakeDevice()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    iv->asleep = false;
+    iv->statWakes++;
+    if (!iv->ready || iv->dead) {
+        return;
+    }
+    if (Reg32(iv, kDroboRegIncomingDoorbellCause) == 0xFFFFFFFF) {
+        FailAllSlots("device-removed");
+        return;
+    }
+    if (iv->wakeTableOK) {
+        RegWrite32(iv, kDroboRegIncomingDoorbellCause, kInBitDriverReady);
+        for (uint32_t poll = 0; poll < 30 && !iv->stopping; poll++) {
+            const uint32_t cause = Reg32(iv, kDroboRegIncomingDoorbellCause);
+            if (cause == 0xFFFFFFFF || (cause & kInBitDriverReady) == 0) {
+                break;
+            }
+            IOSleep(200);
+        }
+    }
+    if (!SignatureValid(iv)) {
+        FailAllSlots("no-droboport-after-wake");
+        return;
+    }
+    PortWrite32(iv, iv->capabilitiesOffset + 0x24, 1);
+    RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitSummary);
+    if (iv->deviceInterruptsEnabled) {
+        RegWrite32(iv, kDroboRegOutgoingDoorbellMask, Reg32(iv, kDroboRegOutgoingDoorbellMask) | kOutBitSummary);
+        RegWrite32(iv, kDroboRegEndpointInterrupt, Reg32(iv, kDroboRegEndpointInterrupt) | kDroboEndpointInterruptBits);
+    }
+    ProcessCompletions();
+    Pump();
+    FlushSend();
+    PublishStatus(this, iv);
+}
+
+kern_return_t
+IMPL(DroboSCSIController, SetPowerState)
+{
+    if (ivars != nullptr && ivars->probeQueue != nullptr && !ivars->stopping) {
+        const bool on = (powerFlags & kIOServicePowerCapabilityOn) != 0;
+        if (!on && !ivars->asleep) {
+            // Going to sleep: stop submitting and give outstanding requests a moment to finish.
+            ivars->asleep = true;
+            for (int i = 0; i < 50 && (ivars->inflight != 0 || ivars->sysInflight); i++) {
+                IOSleep(100);
+            }
+        } else if (on && ivars->asleep) {
+            ivars->probeQueue->DispatchAsync(^{
+                WakeDevice();
+            });
+        }
+    }
+    return SetPowerState(powerFlags, SUPERDISPATCH);
 }
 
 // MARK: Health (management pages over the passthrough channel)
@@ -1896,6 +2147,15 @@ IMPL(DroboSCSIController, HandleTimer)
             FailAllSlots("response-timeout");
         }
     }
+    // A flush the Drobo never confirmed: fail the waiting tasks and stop forwarding flushes.
+    if (iv->sysInflight && now - iv->sysSubmitTime > limit) {
+        iv->sysInflight = false;
+        iv->sysAvailable = false;
+        iv->statErrors++;
+        CompleteFlushWaiters(iv->flushInflight, &iv->flushInflightCount, false);
+        CompleteFlushWaiters(iv->flushPending, &iv->flushPendingCount, false);
+        PublishStatus(this, iv);
+    }
     Pump();
     if ((iv->statTimerFires & 0x3FF) == 0) {
         PublishStatus(this, iv);
@@ -1983,9 +2243,15 @@ DroboSCSIController::HandleTask(const SCSIUserParallelTask * task, OSAction * co
         case 0x00:                                          // TEST UNIT READY
         case 0x1B:                                          // START STOP UNIT (no-op)
         case 0x1E:                                          // PREVENT ALLOW MEDIUM REMOVAL (no-op)
-        case 0x35:                                          // SYNCHRONIZE CACHE 10 (nothing to flush)
-        case 0x91:                                          // SYNCHRONIZE CACHE 16
             return true;
+
+        case 0x35:                                          // SYNCHRONIZE CACHE 10
+        case 0x91:                                          // SYNCHRONIZE CACHE 16
+            // Nothing to flush unless something is writable; otherwise ask the Drobo.
+            if (iv->writableMask == 0 || !iv->sysAvailable || iv->dead) {
+                return true;
+            }
+            return QueueFlush(task, completion, response);
 
         case 0x03:                                          // REQUEST SENSE: no sense
             data[0] = 0x70; data[7] = 10;

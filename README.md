@@ -20,7 +20,8 @@ for the direct-attached Thunderbolt units.
 | APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
 | Blink lights, rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; blink, rename and shutdown not yet verified on hardware |
-| Creating/deleting volumes, changing Drobo settings, firmware updates | Not supported |
+| Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
+| Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
 | Intel Macs | Not supported; use Drobo's original driver there |
 | A ready-to-run download | **Not available yet**, see below |
@@ -206,7 +207,7 @@ Compile without signing:
 xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Roadmap: verifying the write path, forwarding cache flushes, sleep/wake handling.
+Roadmap: verifying on hardware everything marked unverified above.
 
 The management pages the app shows are read with the protocol documented by the open-source
 [drobo-utils](https://github.com/petersilva/drobo-utils) project.

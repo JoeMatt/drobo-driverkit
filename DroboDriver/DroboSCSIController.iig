@@ -26,6 +26,7 @@ public:
     virtual kern_return_t Start(IOService * provider) override;
     virtual kern_return_t Stop(IOService * provider) override;
     virtual kern_return_t NewUserClient(uint32_t type, IOUserClient ** userClient) override;
+    virtual kern_return_t SetPowerState(uint32_t powerFlags) override;
 
     // Called in-process by DroboUserClient on behalf of the host app.
     kern_return_t AppCommand(uint32_t command, uint32_t argument, const char * name) LOCALONLY;
@@ -88,6 +89,11 @@ protected:
                       uint8_t senseKey, uint8_t asc) LOCALONLY;
     void FailAllSlots(const char * stage) LOCALONLY;
     void ArmTimer() LOCALONLY;
+    bool QueueFlush(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response) LOCALONLY;
+    void FlushSend() LOCALONLY;
+    void FlushResponse() LOCALONLY;
+    void CompleteFlushWaiters(struct DroboFlushWaiter * waiters, uint32_t * count, bool success) LOCALONLY;
+    void WakeDevice() LOCALONLY;
     bool HealthSend() LOCALONLY;
     void HealthResponse() LOCALONLY;
     void PublishHealth() LOCALONLY;
