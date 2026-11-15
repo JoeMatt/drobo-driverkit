@@ -101,6 +101,7 @@
   .open .overlay a:nth-child(2) { transition-delay: .14s; }
   .open .overlay a:nth-child(3) { transition-delay: .20s; }
   .open .overlay a:nth-child(4) { transition-delay: .26s; }
+  .open .overlay a:nth-child(5) { transition-delay: .32s; }
 
   /* Double bezel: a glass plate (core) seated in a tray (shell), concentric corners. */
   .shell { --r: 2rem; --pad: .4rem; padding: var(--pad); border-radius: var(--r);
@@ -197,6 +198,7 @@
     <a class="brand" href="#top">drobo-driverkit</a>
     <div class="links">
       <a href="#status">Status</a>
+      <a href="#app">The app</a>
       <a href="#install">Install</a>
       <a href="#contribute">Contribute</a>
     </div>
@@ -205,6 +207,7 @@
   </nav>
   <div class="overlay">
     <a href="#status">Status</a>
+    <a href="#app">The app</a>
     <a href="#install">Install</a>
     <a href="#contribute">Contribute</a>
     <a href="https://github.com/JoeMatt/drobo-driverkit">GitHub</a>
@@ -227,8 +230,8 @@
         <p class="fine reveal" style="--d:.32s">Open source under the MIT license. Not affiliated with Drobo, Inc. Screenshots show the app's built-in demo data.</p>
       </div>
       <div class="cascade reveal" style="--d:.2s">
-        <div class="shell back"><div class="core flush"><img src="images/dashboard-rebuilding.png" alt="The dashboard while the Drobo is rebuilding, with one bay marked Rebuilding and a no-redundancy warning" width="940" height="792" loading="lazy"></div></div>
-        <div class="shell front"><div class="core flush"><img src="images/dashboard.png" alt="The dashboard showing capacity, protection, eight drive bays, volumes and tools" width="940" height="792"></div></div>
+        <div class="shell back"><div class="core flush"><img src="images/dashboard-rebuilding.png" alt="The dashboard while the Drobo is rebuilding, with one bay marked Rebuilding and a no-redundancy warning" width="940" height="822" loading="lazy"></div></div>
+        <div class="shell front"><div class="core flush"><img src="images/dashboard.png" alt="The dashboard showing capacity, protection, eight drive bays, volumes and tools" width="940" height="822"></div></div>
       </div>
     </div>
   </section>
@@ -251,7 +254,7 @@
         <div class="shell reveal" style="--d:.08s"><div class="core">
           <span class="state ok"><i></i>Works</span>
           <h3>Health at a glance</h3>
-          <p>Capacity, drive bays, rebuild progress and alerts, in the included app and its menu bar item.</p>
+          <p>Capacity, drive bays, rebuild progress and alerts. Per drive: rotation speed, SSD life, error count, firmware and serial. Enclosure temperature and uptime.</p>
         </div></div>
         <div class="shell reveal"><div class="core">
           <span class="state warn"><i></i>Experimental</span>
@@ -261,12 +264,49 @@
         <div class="shell reveal" style="--d:.08s"><div class="core">
           <span class="state warn"><i></i>Unverified</span>
           <h3>Management tools</h3>
-          <p>Blink lights, rename, safe shutdown, dual disk redundancy and spin-down settings are in the app. They have not yet been verified on hardware.</p>
+          <p>Blink lights, restart, safe shutdown, rename, dual disk redundancy and spin-down settings are in the app. They use the commands Drobo's own software sends and are not yet verified on hardware.</p>
         </div></div>
         <div class="shell reveal" style="--d:.16s"><div class="core">
           <span class="state no"><i></i>Not supported</span>
           <h3>Out of scope</h3>
           <p>Creating or deleting Drobo volumes, firmware updates and reset. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="app">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <span class="eyebrow reveal">The app</span>
+          <h2 class="reveal" style="--d:.08s">A dashboard, a menu bar item and a command.</h2>
+        </div>
+        <p class="reveal" style="--d:.16s">Everything reads what the driver publishes. Nothing in the app is needed for your volumes to mount, and the command never sends anything to the Drobo.</p>
+      </div>
+      <div class="bento">
+        <div class="shell wide reveal"><div class="core flush"><img src="images/tab-drives.png" alt="The Drives tab: one card per bay with size, model, speed, firmware and serial" width="940" height="822" loading="lazy"></div></div>
+        <div class="shell reveal" style="--d:.08s"><div class="core">
+          <span class="state info"><i></i>Six tabs</span>
+          <h3>Summary, Drives, Volumes, Events, Performance, Advanced</h3>
+          <p>Mount and unmount from the Summary. Events records alerts, drive changes and restarts while the app runs. Performance charts throughput and rebuild progress. Click any serial or model to copy it.</p>
+        </div></div>
+        <div class="shell reveal"><div class="core">
+          <span class="state info"><i></i>Menu bar</span>
+          <h3>A light per bay, one click away</h3>
+          <p>Status, capacity and volumes in a small panel. Hold Option for serials, firmware, counters, a line per drive and the latest events.</p>
+          <img src="images/menubar-panel.png" alt="The menu bar panel with bay lights, capacity and volumes" width="330" height="418" loading="lazy" style="margin-top:1.4rem; border-radius:14px; width:100%; max-width:330px">
+        </div></div>
+        <div class="shell reveal" style="--d:.08s"><div class="core">
+          <span class="state info"><i></i>Alerts</span>
+          <h3>Told when it matters</h3>
+          <p>Notifications when a warning appears or clears, a drive changes state, or the Drobo disconnects or comes back. An optional webhook sends the same alerts wherever you read them. Every event also goes to the macOS log.</p>
+        </div></div>
+        <div class="shell reveal" style="--d:.16s"><div class="core">
+          <span class="state info"><i></i>Command line</span>
+          <h3><span class="mono">drobo</span></h3>
+          <p class="mono" style="font-size:.78rem; line-height:1.7">drobo --short<br>drobo drives<br>drobo get percent<br>drobo all --json<br>drobo metrics</p>
+          <p>Read-only status for prompts, scripts and Prometheus-style monitoring. Installed from the app's menu.</p>
         </div></div>
       </div>
     </div>
@@ -311,7 +351,7 @@
             <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/AGENTS.md"><div><b>AGENTS.md</b><small>Layout, build, safety rules and the DriverKit pitfalls already paid for.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
             <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/01-protocol-reverse-engineering.md"><div><b>Protocol notes</b><small>The wire protocol, from static analysis and from what was observed on hardware.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
             <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/03-coverage.md"><div><b>Coverage audit</b><small>Every capability of the original driver, mapped to this code with a status.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
-            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/04-backlog.md"><div><b>Backlog</b><small>Ten work items, each sized for one pull request.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
+            <a class="doc" href="https://github.com/JoeMatt/drobo-driverkit/blob/master/docs/04-backlog.md"><div><b>Backlog</b><small>Open work items, each sized for one pull request.</small></div><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></a>
           </div>
         </div></div>
         <div class="shell half reveal" style="--d:.08s"><div class="core">

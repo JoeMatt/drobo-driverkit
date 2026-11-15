@@ -842,6 +842,41 @@ Same unit, still rebuilding, minutes after v0.26.0 was activated:
   those two pages (`ExtendedFailedMask` 24) and kept polling everything else with no further
   errors. The 8D does not offer them, at least on this firmware.
 
+### 11.14 System operations: why Blink hung the 8D, and the correct framing (2026-11-15)
+
+From Drobo Dashboard 3.6.1's service, `ESASystemOperationRequest`'s constructor @ `0x1000c56e4`
+and `ESASCSISession::sendSystemOperation` @ `0x1000a33cc`. **[obs]**
+
+A system operation is a 10-byte vendor CDB:
+
+| Byte | Value |
+|---|---|
+| 0 | `EA` |
+| 1 | `10` |
+| 2 | `80` for an operation that reads data back, `00` otherwise |
+| 3 | operation code |
+| 4 | sequence number, a counter the host increments per request |
+| 5 | `00` |
+| 6 | `21` |
+| 7–8 | data length, big-endian |
+| 9 | `00` |
+
+Operations with no parameter still carry **one zero byte, sent to the Drobo** (data-out), length
+1. Operation codes seen: `03` restart (`restartESA`), `06` identify, i.e. blink
+(`identifyESA`; a variant sends a 4-byte big-endian argument), `0D` standby
+(`ESA_SYSOPID_STANDBY_ESA`, named in a trace string), `17` power off (`powerOffESA`), `18` set
+LED dim level (2-byte big-endian value, data-out) and `21` get LED dim level (2 bytes back).
+
+**What this driver sent up to v0.26.0** came from drobo-utils: `EA 10 00 <op> 00 <seq> 20 00 01
+00` as a one-byte data-*in* request. Three differences: the sequence number was in byte 5
+instead of byte 4, byte 6 was `20` instead of `21`, and the data direction was reversed. That
+malformed request is the likely cause of 11.8. v0.27.0 sends Dashboard's framing for blink,
+standby and the new restart command. **Not yet tried on hardware.**
+
+Not implemented: LED dim level (the valid range of the value is not known yet) and the SSD
+cache switch (it is one of the feature bits in options page `31`, whose bit meanings beyond
+dual redundancy and spin-down have not been mapped; on the maintainer's unit bit 2 is also set).
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

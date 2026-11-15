@@ -10,6 +10,23 @@ Security, System Integrity Protection stays on.
 Other open projects cover Drobo's network (NAS) models. As far as we know this is the only one
 for the direct-attached Thunderbolt units.
 
+![The dashboard's Summary tab, shown with demo data](docs/images/tab-summary.png)
+
+## What you get
+
+- **A driver** that makes the Drobo 8D's volumes mount on an Apple silicon Mac with SIP on.
+- **A dashboard app** with tabs for Summary, Drives, Volumes, Events, Performance and Advanced.
+- **A menu bar item** with a light per bay, capacity and per-volume Mount/Unmount. Hold Option
+  for serials, firmware, counters, a line per drive and the latest events.
+- **Alerts** as notifications and, optionally, to a webhook.
+- **`drobo`**, a read-only command for scripts, status lines and Prometheus-style monitoring.
+
+| Drives | Menu bar (hold Option for more) |
+|---|---|
+| ![Drives tab](docs/images/tab-drives.png) | ![Menu bar panel](docs/images/menubar-panel-option.png) |
+
+Screenshots use the app's built-in demo data (`-demo healthy`).
+
 ## Status
 
 | | |
@@ -19,16 +36,18 @@ for the direct-attached Thunderbolt units.
 | Writing | **Experimental and off by default.** You enable it per volume in the app. Implemented but not yet verified on hardware: keep a copy of anything on a volume you make writable |
 | APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
-| Per-drive temperature, error count, firmware and serial; enclosure temperature, uptime and fans | Experimental and off by default (Advanced → Read drive and system details). Not yet tried on hardware. The Drobo does not expose full S.M.A.R.T. data |
+| Per-drive rotation speed, SSD life remaining, error count, firmware and serial; enclosure temperature and uptime | **Works** on the 8D once turned on (Advanced → Read drive and system details). The 8D does not report per-drive temperature, fan or power supply data, and no Drobo exposes full S.M.A.R.T. data |
 | Drobo-style Finder icon with a fullness bar | Volumes → Set Icon, on volumes that allow writes (the icon is a file on the volume) |
 | Rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; rename and shutdown not yet verified on hardware |
-| Blink lights | **Turned off.** As sent today it makes the 8D stop responding and restart |
+| Blink lights, restart | In the app since v0.27.0, using the command format Drobo's own software sends. Not yet verified on hardware; an earlier, wrong format made the 8D hang |
+| LED brightness, SSD cache on/off | Not available yet |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |
 | USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` cannot show them: that needs a second driver, which is not started |
 | Intel Macs | Not supported; use Drobo's original driver there |
-| Menu bar item, background monitoring, notifications, open at login | In the app (Settings) |
+| Menu bar panel, background monitoring, notifications, webhook alerts, open at login | In the app (Settings) |
+| Events log and performance history | In the app. Recorded by the app while it runs; it does not read the Drobo's own log |
 | Update checks (release or nightly channel) | Tells you when a newer version exists; installing it still means rebuilding |
 | A ready-to-run download | **Not available yet**, see below |
 

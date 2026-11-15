@@ -63,6 +63,8 @@ struct DroboVolume: Identifiable {
     let totalBytes: Int64
     /// The Drobo logical unit this volume lives on.
     let lun: Int
+    /// Free space as the file system reports it.
+    var availableBytes: Int64 = 0
 }
 
 /// One logical unit as the Drobo presents it, with the mounted volume on it if there is one.
@@ -86,6 +88,7 @@ enum DroboCommand: UInt32 {
     case rename = 4
     case setOptions = 5
     case setExtended = 6
+    case restart = 7
 }
 
 /// The driver's own timing for one size class of block request.
@@ -350,7 +353,7 @@ enum DroboMonitor {
     /// Mounted volumes that live on one of the Drobo's logical units.
     static func volumes() -> [DroboVolume] {
         guard let session = DASessionCreate(kCFAllocatorDefault) else { return [] }
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey]
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
                                                          options: [.skipHiddenVolumes]) ?? []
         return urls.compactMap { url in
@@ -363,7 +366,8 @@ enum DroboMonitor {
             return DroboVolume(id: url,
                                name: values?.volumeName ?? url.lastPathComponent,
                                totalBytes: Int64(values?.volumeTotalCapacity ?? 0),
-                               lun: lun)
+                               lun: lun,
+                               availableBytes: Int64(values?.volumeAvailableCapacity ?? 0))
         }
     }
 

@@ -34,7 +34,8 @@ struct DroboHostApp: App {
                 .environmentObject(commandLine)
                 .onAppear { updates.check(UpdateChannel(rawValue: updateChannel) ?? .off) }
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 940, height: 760)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -148,6 +149,7 @@ struct PreferencesView: View {
     @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
     @AppStorage(AppDelegate.behaviorKey) private var quitBehavior = ""
     @AppStorage(Alerts.webhookKey) private var webhook = ""
+    @AppStorage(VolumeIcons.automaticKey) private var automaticIcons = true
     @State private var webhookStatus = ""
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError = ""
@@ -162,6 +164,9 @@ struct PreferencesView: View {
                 Text("Keep it in the menu bar").tag("menubar")
                 Text("Quit completely").tag("quit")
             }
+            Toggle("Give Drobo volumes a Drobo icon in Finder", isOn: $automaticIcons)
+            Text("The icon shows how full the volume is. It is a small file stored on the volume, so it only appears on volumes where you have turned on Allow writes; read-only volumes keep the standard icon.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("Open at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in
                     loginError = LoginItem.set(enabled) ?? ""
@@ -422,12 +427,18 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    /// Turned off. On the maintainer's Drobo 8D (firmware 4.2.3) sending the blink command
-    /// (vendor `EA`, sub-command `06`) was followed each time by the unit not responding for a
-    /// few minutes and then restarting, and the lights never blinked. See protocol notes 11.8.
-    /// Nothing is sent until the command's format for this model is known.
-    static let blinkDisabledReason = "Blink Lights is turned off: on this Drobo it made the unit stop responding and restart."
-    func blink() { message = Self.blinkDisabledReason }
+    /// Blink the lights so the unit can be told apart. Needs driver 0.27.0 or later: earlier
+    /// drivers framed this command wrongly and it made the 8D hang (protocol notes 11.8, 11.14).
+    func blink() { command(.blink, label: "Blink lights") }
+
+    /// Ejects everything, then asks the Drobo to restart.
+    func restart() {
+        busy = true
+        ejectAll { [weak self] in
+            self?.command(.restart, label: "Restart")
+            self?.busy = false
+        }
+    }
 
     func rename(to name: String) {
         command(.rename, argument: UInt32(Date().timeIntervalSince1970), name: name, label: "Rename")

@@ -71,7 +71,10 @@ struct MenuBarPanel: View {
                 capacity
                 bays
                 volumes
-                if option.held { details }
+                if option.held {
+                    details
+                    recentEvents
+                }
             } else {
                 Text(snapshot.driverPresent ? "Waiting for the Drobo to finish starting." : "No Drobo detected, or the driver is not running.")
                     .font(Theme.text(12)).foregroundStyle(Theme.secondary)
@@ -142,6 +145,7 @@ struct MenuBarPanel: View {
                     Text("Rebuilding: \(snapshot.relayoutCount) blocks left" + (dashboard.rebuildETA.isEmpty ? "" : ", \(dashboard.rebuildETA)"))
                         .font(Theme.text(10.5)).foregroundStyle(Theme.amber)
                 }
+                Text(glance).font(Theme.text(10.5)).foregroundStyle(Theme.tertiary).lineLimit(1)
             }
         }
     }
@@ -184,6 +188,9 @@ struct MenuBarPanel: View {
                     if option.held {
                         Text(DashboardModel.bytes(lun.bytes) + (lun.bsdName.map { " · \($0)" } ?? ""))
                             .font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary).lineLimit(1)
+                    } else if let volume = dashboard.volumes.first(where: { $0.lun == lun.id }), volume.availableBytes > 0 {
+                        Text("\(DashboardModel.bytes(UInt64(volume.availableBytes))) free")
+                            .font(Theme.text(10)).foregroundStyle(Theme.tertiary).lineLimit(1)
                     }
                     if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
                         Button("Open") { close(); NSWorkspace.shared.open(url) }
@@ -194,8 +201,21 @@ struct MenuBarPanel: View {
                         .disabled(lun.bsdName == nil || dashboard.busy)
                 }
                 .padding(.vertical, 2)
+                if let fraction = dashboard.volumes.first(where: { $0.lun == lun.id })?.usedFraction {
+                    MiniBar(fraction: fraction).padding(.leading, 21).padding(.bottom, 3)
+                }
             }
         }
+    }
+
+    /// One line of at-a-glance facts for the basic view.
+    private var glance: String {
+        let snapshot = dashboard.snapshot
+        var parts = ["\(snapshot.slots.filter { !$0.isEmpty }.count) drives"]
+        if let dual = snapshot.dualDiskRedundancy { parts.append(dual ? "dual redundancy" : "single redundancy") }
+        if let temperature = snapshot.systemTemperature { parts.append("\(temperature) °C") }
+        if let uptime = snapshot.uptime, uptime > 0 { parts.append("up " + DashboardModel.duration(Double(uptime))) }
+        return parts.joined(separator: " · ")
     }
 
     /// Shown while Option is held.
@@ -209,6 +229,12 @@ struct MenuBarPanel: View {
             line("Throughput", "↓ \(rate(dashboard.readRate))  ↑ \(rate(dashboard.writeRate))")
             line("Requests", "\(snapshot.reads) read · \(snapshot.writes) written")
             line("I/O errors", "\(snapshot.errors)")
+            if let slowest = snapshot.latency.filter({ $0.count > 0 }).max(by: { $0.averageMicroseconds < $1.averageMicroseconds }) {
+                line("Latency", String(format: "%.1f ms average at %@", Double(slowest.averageMicroseconds) / 1000, slowest.id))
+            }
+            if let minutes = snapshot.spinDownMinutes { line("Spin-down", minutes > 0 ? "\(minutes) min" : "off") }
+            if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold { line("Alerts at", "\(yellow)% and \(red)% full") }
+            line("Details", snapshot.extendedFailed ? "refused by this Drobo" : (snapshot.extendedEnabled ? "on" : "off"))
             ForEach(snapshot.slots.filter { !$0.isEmpty }) { slot in
                 HStack(spacing: 6) {
                     Circle().fill(tint(slot)).frame(width: 5, height: 5)
@@ -217,15 +243,41 @@ struct MenuBarPanel: View {
                         .frame(width: 44, alignment: .leading)
                     Text(slot.model).font(Theme.mono(9.5)).foregroundStyle(Theme.secondary).lineLimit(1)
                     Spacer(minLength: 2)
-                    if let temperature = slot.temperature, temperature > 0 {
+                    if slot.isSolidState {
+                        Text("SSD \(slot.lifeRemaining.map { "\($0)%" } ?? "")").font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary)
+                    } else if let rpm = slot.rpm {
+                        Text(verbatim: "\(rpm) rpm").font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary)
+                    }
+                    if let errors = slot.errorCount, errors > 0 {
+                        Text("\(errors) err").font(Theme.mono(9.5)).foregroundStyle(Theme.amber)
+                    }
+                    if let temperature = slot.temperature {
                         Text("\(temperature)°").font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary)
                     }
-                    Text(slot.statusText).font(Theme.mono(9.5)).foregroundStyle(tint(slot))
+                    Text(slot.statusText).font(Theme.mono(9.5)).foregroundStyle(tint(slot)).fixedSize()
                 }
                 .copyOnClick(slot.serial.isEmpty ? slot.model : "\(slot.model) \(slot.serial)")
             }
         }
         .transition(.opacity)
+    }
+
+    /// The last few events, with their times. Shown while Option is held.
+    @ViewBuilder private var recentEvents: some View {
+        let recent = dashboard.events.events.prefix(3)
+        if !recent.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                ForEach(Array(recent)) { event in
+                    HStack(spacing: 6) {
+                        Text(event.date.formatted(date: .omitted, time: .shortened))
+                            .font(Theme.mono(9.5)).foregroundStyle(Theme.tertiary).frame(width: 58, alignment: .leading)
+                        Text(event.title).font(Theme.text(10.5)).foregroundStyle(Theme.secondary).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
     }
 
     private func line(_ label: String, _ value: String) -> some View {

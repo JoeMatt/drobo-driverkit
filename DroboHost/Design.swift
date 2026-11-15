@@ -231,6 +231,30 @@ struct CapacityBar: View {
     }
 }
 
+/// A thin fullness bar for a volume row.
+struct MiniBar: View {
+    let fraction: Double
+
+    var body: some View {
+        let tint = fraction > 0.95 ? Theme.coral : (fraction > 0.85 ? Theme.amber : Theme.ice)
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.07))
+                Capsule().fill(tint).frame(width: max(geo.size.height, geo.size.width * min(max(fraction, 0), 1)))
+            }
+        }
+        .frame(height: 3)
+    }
+}
+
+extension DroboVolume {
+    /// How full the volume is, 0...1, from the file system; nil if unknown.
+    var usedFraction: Double? {
+        guard totalBytes > 0 else { return nil }
+        return Double(totalBytes - availableBytes) / Double(totalBytes)
+    }
+}
+
 /// Entry animation: each block settles up into place, staggered by `index`.
 private struct Rise: ViewModifier {
     let index: Int

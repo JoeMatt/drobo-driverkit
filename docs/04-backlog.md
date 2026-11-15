@@ -21,12 +21,12 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
    with zero errors after writes and an eject; a timeout must disable forwarding, not hang I/O.
 5. **Verify sleep/wake** [driver, needs hardware]. Sleep and wake with volumes mounted; I/O
    resumes, Wakes increments, nothing is force-ejected.
-6. **Verify Rename, Shut Down, Settings; fix Blink** [driver, app, needs hardware]. Formats
-   come from drobo-utils. **Blink is turned off**: as sent it made the 8D stop responding and
-   restart (protocol notes 11.8). Do not re-enable it, and do not test Shut Down (the same
-   vendor command with another sub-code), until the 8D's format is confirmed from Drobo
-   Dashboard (item 1). Never test either on a unit that is rebuilding. Settings only on a
-   healthy unit.
+6. **Verify Blink, Restart, Shut Down, Rename, Settings** [driver, app, needs hardware].
+   Blink, Restart and Shut Down use Drobo Dashboard's own framing since v0.27.0 (protocol notes
+   11.14); the earlier framing hung the 8D. Try Blink first. Restart and Shut Down only on a
+   unit that is not rebuilding. Then: LED brightness (find the valid range of the dim level,
+   operations `18`/`21`) and the SSD cache switch (map the feature bits of options page `31`,
+   probably from the Dashboard app's own binary).
 7. **General interpreter for the doorbell tables** [driver, protocol]. The driver hard-codes the
    8D's doorbell values and only checks them against the device's tables. Implement the
    and/or/xor/set/none interpreter from protocol notes section 6 so other firmware and models

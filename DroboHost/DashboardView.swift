@@ -33,23 +33,15 @@ struct ContentView: View {
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
+    @State private var confirmRestart = false
     @State private var confirmWritable = false
     @State private var showSettings = false
     @State private var editDual = false
     @State private var editSpin = 0
     @Namespace private var tabSelection
 
-    /// The window is one fixed size for every tab, so switching tabs never resizes it; a tab that
-    /// is taller than the space scrolls. Capped to the screen on small displays. The hidden
-    /// title bar's height is still added above the content, so leave room for it.
-    private var windowHeight: CGFloat {
-        // Demo mode can pretend the screen is small: `-demo healthy -demoMaxHeight 600`.
-        let forced = UserDefaults.standard.double(forKey: "demoMaxHeight")
-        if Demo.scenario != nil, forced > 0 { return forced }
-        let screen = NSApp.keyWindow?.screen ?? NSScreen.main
-        return min(760, max(420, (screen?.visibleFrame.height ?? 800) - 40))
-    }
-
+    /// The window opens at one size for every tab, so switching tabs never resizes it, and can
+    /// be resized freely; a tab taller than the window scrolls.
     var body: some View {
         let ready = dashboard.snapshot.ready
         VStack(alignment: .leading, spacing: 10) {
@@ -76,7 +68,8 @@ struct ContentView: View {
             footer
         }
         .padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 12)
-        .frame(width: 940, height: windowHeight, alignment: .topLeading)
+        .frame(minWidth: 860, idealWidth: 940, maxWidth: .infinity,
+               minHeight: 480, idealHeight: 760, maxHeight: .infinity, alignment: .topLeading)
         .background(Backdrop().ignoresSafeArea())
         .preferredColorScheme(.dark)
         .alert("Rename Drobo", isPresented: $showRename) {
@@ -88,7 +81,13 @@ struct ContentView: View {
             Button("Eject All and Shut Down") { dashboard.shutDown() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("All Drobo volumes are ejected first, then the Drobo is asked to flush its caches and power down. This command has not been verified on hardware, and a related one (Blink Lights) made the Drobo restart instead. If the Drobo is rebuilding, leave it running.")
+            Text("All Drobo volumes are ejected first, then the Drobo is asked to flush its caches and go to standby. This needs driver 0.27.0 or later and has not been verified on hardware yet. If the Drobo is rebuilding, leave it running.")
+        }
+        .confirmationDialog("Restart the Drobo?", isPresented: $confirmRestart) {
+            Button("Eject All and Restart") { dashboard.restart() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All Drobo volumes are ejected first, then the Drobo is asked to restart. It takes several minutes to come back. This needs driver 0.27.0 or later and has not been verified on hardware yet. If the Drobo is rebuilding, leave it running.")
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
         .confirmationDialog("Change which volumes can be written?", isPresented: $confirmWritable) {
@@ -356,10 +355,16 @@ struct ContentView: View {
                             Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
                                 .font(Theme.text(12.5, .medium))
                                 .foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary).lineLimit(1)
-                            Text(DashboardModel.bytes(lun.bytes) + (lun.writable ? " · read/write" : ""))
-                                .font(Theme.text(10.5)).foregroundStyle(lun.writable ? Theme.amber : Theme.tertiary)
-                                .lineLimit(1)
+                            if lun.writable { Text("read/write").font(Theme.text(10.5)).foregroundStyle(Theme.amber).lineLimit(1) }
                             Spacer(minLength: 4)
+                            if let volume = dashboard.volumes.first(where: { $0.lun == lun.id }), let fraction = volume.usedFraction {
+                                MiniBar(fraction: fraction).frame(width: 70)
+                                Text("\(DashboardModel.bytes(UInt64(max(0, volume.availableBytes)))) free")
+                                    .font(Theme.text(10.5)).foregroundStyle(Theme.tertiary).lineLimit(1)
+                                    .frame(width: 84, alignment: .trailing)
+                            } else {
+                                Text(DashboardModel.bytes(lun.bytes)).font(Theme.text(10.5)).foregroundStyle(Theme.tertiary).lineLimit(1)
+                            }
                             if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
                                 Button("Open") { NSWorkspace.shared.open(url) }
                                     .buttonStyle(PillButtonStyle(compact: true))
@@ -417,12 +422,16 @@ struct ContentView: View {
 
     private var drivesTab: some View {
         Bezel(title: "Drives") {
-            EmptyView()
+            Button("Blink Lights") { dashboard.blink() }
+                .buttonStyle(PillButtonStyle(icon: "light.max", compact: true))
+                .disabled(dashboard.busy || !dashboard.snapshot.healthAvailable)
+                .help("Makes the Drobo's lights blink so you can tell which unit this is")
         } content: {
             if dashboard.snapshot.slots.isEmpty {
                 Text("No bay information yet.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
             } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())], spacing: 8) {
+                // Two columns at the default width, more as the window grows.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 400), spacing: 8)], spacing: 8) {
                     ForEach(dashboard.snapshot.slots) { drive($0) }
                 }
             }
@@ -455,11 +464,11 @@ struct ContentView: View {
                 if slot.errorCount != nil || !slot.serial.isEmpty {
                     HStack(spacing: 14) {
                         if slot.isSolidState { fact("Type", "SSD") } else if let rpm = slot.rpm { fact("Speed", "\(rpm) rpm") }
-                        if let life = slot.lifeRemaining, slot.isSolidState || life < 100 {
-                            fact("Life", "\(life)%", tint: life < 20 ? Theme.amber : nil)
-                        }
-                        if let temperature = slot.temperature { fact("Temp", "\(temperature) °C") }
+                        if let life = slot.lifeRemaining { fact("Life left", "\(life)%", tint: life < 20 ? Theme.amber : nil) }
                         if let errors = slot.errorCount { fact("Errors", "\(errors)", tint: errors > 0 ? Theme.amber : nil) }
+                        fact("Temp", slot.temperature.map { "\($0) °C" } ?? "not reported")
+                    }
+                    HStack(spacing: 14) {
                         if !slot.firmwareRevision.isEmpty { fact("Firmware", slot.firmwareRevision) }
                         if !slot.serial.isEmpty { fact("Serial", slot.serial) }
                     }
@@ -467,7 +476,7 @@ struct ContentView: View {
             }
         }
         .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: dashboard.snapshot.extendedEnabled ? 96 : 78, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: dashboard.snapshot.extendedEnabled ? 112 : 78, alignment: .topLeading)
         .background(plate.fill(Color.white.opacity(slot.isEmpty ? 0.012 : 0.04)))
         .overlay(plate.strokeBorder(Color.white.opacity(0.07),
                                     style: StrokeStyle(lineWidth: 1, dash: slot.isEmpty ? [3, 3] : [])))
@@ -513,6 +522,14 @@ struct ContentView: View {
                                  + (lun.bsdName.map { " · \($0)" } ?? "")
                                  + (lun.writable ? " · read/write" : " · read-only"))
                                 .font(Theme.text(10.5)).foregroundStyle(lun.writable ? Theme.amber : Theme.tertiary)
+                            if let volume = dashboard.volumes.first(where: { $0.lun == lun.id }), let fraction = volume.usedFraction {
+                                HStack(spacing: 8) {
+                                    MiniBar(fraction: fraction).frame(width: 220)
+                                    Text("\(DashboardModel.bytes(UInt64(max(0, volume.totalBytes - volume.availableBytes)))) used · \(DashboardModel.bytes(UInt64(max(0, volume.availableBytes)))) free · \(Int((fraction * 100).rounded()))%")
+                                        .font(Theme.text(10.5)).foregroundStyle(Theme.secondary)
+                                }
+                                .padding(.top, 3)
+                            }
                         }
                         Spacer(minLength: 4)
                         if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
@@ -629,6 +646,8 @@ struct ContentView: View {
         let unavailable = dashboard.busy || !dashboard.snapshot.healthAvailable
         return Bezel(title: "Tools") {
             HStack(spacing: 8) {
+                Button("Blink Lights") { dashboard.blink() }
+                    .buttonStyle(PillButtonStyle(icon: "light.max")).disabled(unavailable)
                 Button("Rename…") {
                     newName = dashboard.snapshot.name
                     showRename = true
@@ -646,6 +665,8 @@ struct ContentView: View {
                     .disabled(dashboard.busy || !dashboard.luns.contains { $0.writable && $0.isMounted })
                     .help("Writes and reads back 64 MB on a writable volume to check the write path")
                 Spacer()
+                Button("Restart…") { confirmRestart = true }
+                    .buttonStyle(PillButtonStyle(icon: "arrow.clockwise")).disabled(unavailable)
                 Button("Shut Down…") { confirmShutdown = true }
                     .buttonStyle(PillButtonStyle(kind: .danger, icon: "power")).disabled(unavailable)
             }

@@ -58,13 +58,22 @@ struct VolumeIconArt: View {
 /// "Allow writes" is on, and the app only does it when asked, per volume.
 enum VolumeIcons {
     private static let knownKey = "volumeIconTenths"      // volume UUID -> lights last drawn
+    private static let declinedKey = "volumeIconDeclined" // volume UUIDs whose icon the owner removed
+    /// App setting: put the icon on every Drobo volume that allows writes, without being asked
+    /// per volume. On unless turned off in Settings.
+    static let automaticKey = "automaticVolumeIcons"
+
+    static var automatic: Bool {
+        UserDefaults.standard.object(forKey: automaticKey) as? Bool ?? true
+    }
 
     /// How full the volume is, in tenths, from the file system.
     static func tenths(of url: URL) -> Int? {
         guard let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
               let total = values.volumeTotalCapacity, let free = values.volumeAvailableCapacity, total > 0 else { return nil }
+        // Rounded up, as the Drobo's own capacity lights are: any data lights the first one.
         let used = Double(total - free) / Double(total)
-        return min(10, max(0, Int((used * 10).rounded())))
+        return min(10, max(0, Int((used * 10).rounded(.up))))
     }
 
     private static func identifier(of url: URL) -> String? {
@@ -91,6 +100,7 @@ enum VolumeIcons {
             return "Could not write the icon. The volume must allow writes."
         }
         remember(url, level)
+        setDeclined(url, false)
         return nil
     }
 
@@ -100,17 +110,33 @@ enum VolumeIcons {
             return "Could not remove the icon. The volume must allow writes."
         }
         remember(url, nil)
+        setDeclined(url, true)
         return nil
     }
 
-    /// Redraws icons this app set earlier when a volume's fullness has moved to another tenth.
-    /// Called from the poll; does nothing for volumes it never touched or that are read-only.
+    /// Keeps icons in step with how full each writable volume is: redraws one when the volume
+    /// moves to another tenth and, when the automatic setting is on, adds one to a writable
+    /// volume that has none (unless the owner removed it). Called from the poll with the
+    /// volumes that allow writes; read-only volumes cannot carry an icon.
     @MainActor static func refresh(writable urls: [URL]) {
-        let known = UserDefaults.standard.dictionary(forKey: knownKey) as? [String: Int] ?? [:]
+        let defaults = UserDefaults.standard
+        let known = defaults.dictionary(forKey: knownKey) as? [String: Int] ?? [:]
+        let declined = Set(defaults.stringArray(forKey: declinedKey) ?? [])
         for url in urls {
-            guard let id = identifier(of: url), let drawn = known[id], let now = tenths(of: url), now != drawn else { continue }
-            _ = apply(to: url)
+            guard let id = identifier(of: url), let now = tenths(of: url) else { continue }
+            if let drawn = known[id] {
+                if drawn != now { _ = apply(to: url) }
+            } else if automatic, !declined.contains(id) {
+                _ = apply(to: url)
+            }
         }
+    }
+
+    private static func setDeclined(_ url: URL, _ declined: Bool) {
+        guard let id = identifier(of: url) else { return }
+        var all = Set(UserDefaults.standard.stringArray(forKey: declinedKey) ?? [])
+        if declined { all.insert(id) } else { all.remove(id) }
+        UserDefaults.standard.set(Array(all), forKey: declinedKey)
     }
 
     private static func remember(_ url: URL, _ level: Int?) {

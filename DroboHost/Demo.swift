@@ -74,6 +74,11 @@ enum Demo {
         snapshot.uptime = 84 * 86_400 + 2 * 3600 + 51 * 60
         snapshot.fanLevels = [3, 3]
         data.snapshot = snapshot
+        data.volumes = [
+            DroboVolume(id: URL(fileURLWithPath: "/Volumes/Archive"), name: "Archive", totalBytes: 16_000_000_000_000, lun: 0, availableBytes: 11_200_000_000_000),
+            DroboVolume(id: URL(fileURLWithPath: "/Volumes/Media"), name: "Media", totalBytes: 16_000_000_000_000, lun: 1, availableBytes: 13_900_000_000_000),
+            DroboVolume(id: URL(fileURLWithPath: "/Volumes/Backups"), name: "Backups", totalBytes: 16_000_000_000_000, lun: 2, availableBytes: 15_100_000_000_000),
+        ]
         data.luns = [
             DroboLUN(id: 0, bytes: 16 * tb, volumeNames: ["Archive"], bsdName: nil, writable: false),
             DroboLUN(id: 1, bytes: 16 * tb, volumeNames: ["Media"], bsdName: nil, writable: true),

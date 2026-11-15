@@ -1154,6 +1154,7 @@ enum : uint32_t {
     kDroboAppCommandRename      = 4,    // argument = current UTC seconds, name = new name
     kDroboAppCommandSetOptions  = 5,    // argument = flags (low 16 bits) | spin-down minutes << 16
     kDroboAppCommandSetExtended = 6,    // argument = 1 to poll the optional per-drive page, 0 to stop
+    kDroboAppCommandRestart     = 7,
 };
 
 kern_return_t
@@ -1216,10 +1217,7 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                 break;
             }
             case kDroboAppCommandBlink:
-                // Refused. As sent (vendor EA, sub-command 06) it made the 8D stop responding and
-                // restart; see protocol notes 11.8. Do not re-enable without the 8D's own format.
-                result = kIOReturnUnsupported;
-                break;
+            case kDroboAppCommandRestart:
             case kDroboAppCommandStandby:
             case kDroboAppCommandSetOptions:
             case kDroboAppCommandRename: {
@@ -1261,14 +1259,21 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     iv->commandCDB[3] = 0x31;
                     iv->commandCDB[8] = 23;
                 } else {
-                    // Vendor command 0xEA: 0x06 = blink the lights, 0x0D = flush and stand by.
-                    iv->commandDataOut = false;
+                    // System operation, exactly as Drobo Dashboard builds it
+                    // (ESASystemOperationRequest, protocol notes 11.14):
+                    //   EA 10 00 <operation> <sequence> 00 21 <length16> 00, one zero byte data-out.
+                    // Operations: 0x06 identify (blink), 0x0D standby, 0x03 restart.
+                    // Up to v0.26.0 this was sent as data-in with the sequence in byte 5 and
+                    // 0x20 in byte 6, which is what made the 8D hang (11.8).
+                    iv->commandDataOut = true;
                     iv->commandLength  = 1;
+                    iv->commandData[0] = 0;
                     iv->commandCDB[0] = 0xEA;
                     iv->commandCDB[1] = 0x10;
-                    iv->commandCDB[3] = (command == kDroboAppCommandBlink) ? 0x06 : 0x0D;
-                    iv->commandCDB[5] = ++iv->commandSequence;
-                    iv->commandCDB[6] = 0x20;
+                    iv->commandCDB[3] = command == kDroboAppCommandBlink ? 0x06
+                                      : command == kDroboAppCommandRestart ? 0x03 : 0x0D;
+                    iv->commandCDB[4] = ++iv->commandSequence;
+                    iv->commandCDB[6] = 0x21;
                     iv->commandCDB[8] = 0x01;
                 }
                 iv->commandPending = true;
