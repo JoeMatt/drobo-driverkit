@@ -99,7 +99,8 @@ publishes its raw bytes under `DroboHealth`.
 | Per-bay light, size, model | Slot page `03` | shown (Summary, Drives) |
 | Per-drive interface | Slot page `03`, last 8 bytes of the identity field | decoded; shown (Drives) |
 | Per-drive managed capacity | Slot page `03`, second u64 of the record | decoded; shown (Drives) |
-| Per-drive "short identity" and trailing u32 | Slot page `03` | polled, meaning unknown, not shown |
+| Per-drive "short identity" and trailing u32 | Slot page `03` | settled: a repeat of the model's first 16 bytes, and zero (protocol notes 11.9) |
+| Per-drive temperature, error count, firmware revision, serial, SSD life remaining, rotational speed | Slot page 2, sub-page `35`: record layout known from Drobo Dashboard (protocol notes 11.9) | **not polled yet**; untried on the 8D |
 | Name, serial | Settings page `05`, `DroboStatus` | shown |
 | Firmware version, build date, platform | Firmware page `08` | version and build shown; platform decoded only |
 | Device clock | Settings page `05` (UTC u32, offset u16) | polled, not decoded |
@@ -109,9 +110,10 @@ publishes its raw bytes under `DroboHealth`.
 | Identify | Blink command | **disabled**: restarts the unit as currently sent (protocol notes 11.8) |
 | Open in Finder | no protocol needed | in the app (Volumes) |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
-| Temperature (average, max, controller) | no page in the notes or drobo-utils reference covers it | **unknown**, needs backlog item 1 |
-| Fan speed, uptime, power state | same | **unknown** |
-| Hot data cache, disk pack status, data integrity | same | **unknown** |
+| Temperature (controller), uptime | probably system info, sub-page `33`; layout not decoded | **not polled**, backlog item 13 |
+| Fan speed, power supply | sub-pages `37` and `36`; layouts not decoded | **not polled**, backlog item 13 |
+| Disk pack status | sub-page `11`; layout not decoded | **not polled**, backlog item 13 |
+| Hot data cache, data integrity | no page identified | **unknown** |
 | Events log | the Drobo's own log: no reference | **unknown**. The Events tab instead records changes the app sees between polls (alerts, drive states, restarts, mounts) |
 | Scans | same | **unknown** |
 | Performance history | sampled by the app from the counters above | shown (Performance): last hour per poll, last 24 hours per minute, in memory only |

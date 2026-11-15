@@ -685,6 +685,74 @@ restarted, and this repeated. During one such restart the driver was seen sittin
 - **Standby (Shut Down) is the same command with sub-command `0D`** and is equally unverified.
   Treat it as suspect. Rename and Settings use MODE SELECT, a different path.
 
+### 11.9 Slot page fields settled; Drobo Dashboard's page map (2026-11-15)
+
+**Slot page `03`, from a diagnostics dump of the 8D.** The two fields that were unknown carry
+nothing new: the 16-byte "short identity" is the first 16 bytes of the 32-byte identity again
+(eight spaces, then the start of the model), and the trailing u32 was zero for every bay. The
+identity's vendor field is blank and its product field is the model truncated to 16 characters.
+So page `03` has no temperature, serial number or error data.
+
+**Drobo Dashboard 3.6.1, static analysis of its service** (`DDService64d`, x86_64, symbols
+intact; nothing was sent to the Drobo). Each management page is a class under `ESAProtocol::`
+whose `getSubPageType()` returns its sub-page code. The codes this driver already uses match
+(`01 02 03 05 06 08 09 30 31`), which is the check that the method is right. **[obs]**
+
+| Sub-page | Class | Polled here |
+|---|---|---|
+| `01` | `ESAConfigurationInfo` | yes |
+| `02` | `ESACapacityInfo` | yes |
+| `03` | `ESASlotInfo` | yes |
+| `04` | `ESALUNInfo` | no |
+| `05` | `ESASystemSettings` | yes |
+| `06` | `ESAProtocolVersion` | yes |
+| `07` | `ESALUNInfo2` | no |
+| `08` | `ESAFirmwareInfo` | yes |
+| `09` | `ESAStatusInfo` | yes |
+| `0A`–`0D` | `ESASetCHAP`, `ESASetSingleInitiator`, `ESASetUsedCapacity`, `ESASetLUNName` | no (setters) |
+| `10` | `ESASnapshotInfo` | no |
+| `11` | `ESADiskPackInfo` | no |
+| `12` | `ESADeviceInquiry` | no |
+| `15` | `ESALUNMappingInfo` | no |
+| `30`, `31` | `ESAOptions`, `ESAOptions2` | yes |
+| `32` | `ESAModePageB1200NetworkInterfaces` | no |
+| `33` | `ESASystemInfo` | no |
+| `34` | `ESASystemPerformance` | no |
+| `35` | `ESASlotInfo2` | no |
+| `36` | `ESAPowerSupply` | no |
+| `37` | `ESAFanInfo` | no |
+| `38` | `ESAControllerCard` | no |
+| `39` | `ESAExpanderInfo` | no |
+| `3A` | `ESABatteryInfo` | no |
+| `80` | `ESADeviceSerial`, `ESAEventMessages` | no |
+
+Which of these the 8D's firmware answers is not known: several classes size themselves from the
+protocol version, and the 8D reports `00 0B`.
+
+**Per-drive record of page `35`**, `ESASlotInfoStruct2::parse` @ `0x10009d534`, field names from
+`ESASlotInfoStruct2::print` @ `0x10009d6a6`. 108 (`0x6C`) bytes, big-endian. **[obs]**
+
+| Offset | Type | Field |
+|---|---|---|
+| `0x00` | u8 | slot id |
+| `0x01` | u8 | slot status |
+| `0x02` | u16 | error count |
+| `0x04` | u32 | disk state |
+| `0x08` | u8 | disk type |
+| `0x09` | u8 | temperature |
+| `0x0A` | u8 | life remaining |
+| `0x0B` | u8 | rotational speed |
+| `0x0C` | char[44] | manufacturer and model |
+| `0x38` | char[12] | firmware revision |
+| `0x44` | char[24] | serial number |
+| `0x5C` | u64 | total capacity |
+| `0x64` | u64 | managed capacity |
+
+Not yet read: the header in front of these records (`ESASlotInfo2::parse` @ `0x10009d8c4`), the
+units and encodings of disk state, disk type, life remaining and rotational speed, and the
+layouts of pages `33`, `34`, `36`, `37`, `38` and `11`. The Drobo does not appear to pass
+S.M.A.R.T. attributes through: the only "SMART" strings in the service are a drive vendor name.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

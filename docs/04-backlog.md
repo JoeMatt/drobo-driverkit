@@ -50,12 +50,15 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     to investigate: a custom `.VolumeIcon.icns` written to the volume (needs write access, so not
     possible on the read-only default), or an icon the driver supplies for its disks. Decide
     which is feasible under DriverKit before building either.
-13. **Telemetry the dashboard cannot show yet** [protocol, needs hardware]. Temperature, fan
-    speed, uptime, power state, hot data cache, disk pack status and data integrity have no
-    documented page (see the dashboard table in [03-coverage.md](03-coverage.md)). Depends on
-    item 1. Also decode what is already polled but unused: the device clock (settings page), the
-    protocol version and the config page's LUN limits, and work out the slot record's "short
-    identity" field and trailing u32 from a hardware dump.
+13. **Per-drive and system telemetry** [driver, app, protocol, needs hardware]. Protocol notes
+    11.9 has Drobo Dashboard's full sub-page map and the per-drive record of sub-page `35`
+    (temperature, error count, firmware revision, serial, SSD life remaining, rotational speed).
+    Steps: (a) read the `35` page header and the layouts of `33` system info, `34` performance,
+    `36` power supply, `37` fan, `11` disk pack from the same binary; (b) add `35` to the
+    driver's polled pages, read-only MODE SENSE like the others, disabling it on any error; try
+    it only on a unit that is **not rebuilding**; (c) show it on the Drives tab. Drive serial
+    numbers must be redacted in diagnostics files. Also still unused from polled pages: the
+    device clock, the protocol version and the config page's LUN limits.
 14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
     performance history across app restarts, add latency over time (the driver publishes only
     running totals, so the app must difference them), and export the event log.
