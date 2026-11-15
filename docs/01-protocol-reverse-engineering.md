@@ -594,6 +594,37 @@ SCSIControllerDriverKit lessons learned getting here (each one cost a driver ver
 - First run: 3,702 reads, 3,669 completed from the interrupt handler and 7 by the fallback
   timer, 0 errors, peak 7 requests in flight, the request doorbell never found busy.
 
+### 11.5 Passthrough channel and management pages (driver v0.17.0, 2026-11-14)
+
+The passthrough ("TM") channel works, and the Drobo's management pages are readable through it.
+
+- Request list `DroboPort[0x30]`, response list `DroboPort[0x34]`, window 1. Doorbell In[4]
+  (`BAR0[0x21878] = 0x08000000`), completion Out[1] (`0x800` in `BAR0[0x21870]`, cleared by
+  writing `~0x800`). Transaction ID 0, as in the kext. Response entries use the same 32-byte
+  format as the block channel.
+- **A data-carrying passthrough request must set a buffer-mode flag.** Section 8.3 gave the
+  flags as `0x00410020` / `0x00420020`; the kext then ORs in one more bit:
+  `0x10` when an SGL follows at `+0x58`, or `0x08` when there is exactly one segment, in which
+  case the pointer field at `+0x28` holds the **buffer's bus address** and the first SGL
+  length is zeroed. Without either bit the Drobo completes the request with SRB response `4`
+  (error) and transfers nothing. With `0x08` and the bus address it returns SRB response `1`.
+- The management protocol is MODE SENSE(10) (`5A 00 3A <sub-page> 00 00 00 <len16> 00`), vendor
+  page `0x3A`, as documented by the open-source
+  [drobo-utils](https://github.com/petersilva/drobo-utils) project. Each reply starts with a
+  4-byte header `7A <sub-page> <len16>` and is big-endian.
+
+Pages verified on the 8D (firmware 4.2.3):
+
+| Sub-page | Content | Notes for the 8D |
+|---|---|---|
+| `0x01` | Config: slot count, max LUNs, max LUN size | Slot count is **9**: eight bays plus the mSATA bay |
+| `0x02` | Capacity: free, used, virtual, unprotected (u64 bytes each) | as drobo-utils |
+| `0x03` | Slot info: count byte, then 72-byte records | Record: u16 (`0x0046`), slot id, physical bytes u64, managed u64, status byte, identity[32] = vendor[8] + product[16] + interface[8] (`"SATA"`), short identity[16], u32. Status `0x80` = empty, `0x04` = blinking yellow/green (rebuilding) |
+| `0x05` | Settings: UTC u32, offset u16, name[32] | as drobo-utils |
+| `0x06` | Protocol version | `00 0B` |
+| `0x08` | Firmware | 6 numeric bytes, build date[32], platform[16] (`"ArmMarvell"`), version[16] (`"4.2.3"`). The readable version is the third string, not the leading bytes |
+| `0x09` | Status: flags u32, relayout count u32 | Flag bits as drobo-utils (`0x0200` relayout in progress, `0x0040` no redundancy, …). Bits `0x8000` and `0x10000` were also set and are not documented there |
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

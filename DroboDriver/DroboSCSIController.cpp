@@ -56,6 +56,14 @@ struct DroboLUN
     uint64_t blockCount;
 };
 
+// Drobo management pages: MODE SENSE(10), page 0x3A, one sub-page each. The formats are those
+// documented by the open-source drobo-utils project; the host app decodes them.
+static const uint32_t kHealthPageCount = 7;
+static const uint32_t kHealthPageMax   = 720;       // slot page: 4 + 1 + 9 x 72
+static const uint8_t  kHealthPages[kHealthPageCount] = { 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09 };
+static const uint32_t kHealthSlot      = 32;        // request slot after the 32 block-I/O slots
+static const uint32_t kHealthDataOffset = 0x3000;   // data area (4 KiB) inside the request buffer
+
 static const uint32_t kDroboSlotCount   = 32;       // concurrent requests (device allows 64)
 static const uint32_t kDroboSlotSize    = 0x100;    // request memory per slot (0x90 used)
 static const uint32_t kDroboTaskTimeoutMS = 30000;
@@ -150,6 +158,28 @@ struct DroboSCSIController_IVars
     uint32_t                   statPeakInflight;
     uint32_t                   statPeakBurst;
     uint64_t                   statDoorbellBusy;
+    // Request latency (submit to completion) by transfer size: <=4K, <=64K, <=256K, larger.
+    uint64_t                   latencyCount[4];
+    uint64_t                   latencyTicks[4];
+    uint64_t                   latencyMaxTicks[4];
+    uint64_t                   lastPublishTicks;
+
+    // Health polling over the passthrough ("TM") channel. I/O queue only.
+    IOTimerDispatchSource *    healthTimer;
+    OSAction *                 healthAction;
+    uint32_t                   tmRequestListOffset;
+    uint32_t                   tmResponseListOffset;
+    bool                       healthAvailable;
+    bool                       tmInflight;
+    uint64_t                   tmSubmitTime;
+    uint32_t                   healthPage;          // index into kHealthPages
+    uint32_t                   healthSlotCount;
+    uint64_t                   healthCycles;
+    uint64_t                   healthErrors;
+    uint32_t                   healthLastSRB;
+    uint32_t                   healthLastStatus;
+    uint32_t                   healthLength[kHealthPageCount];
+    uint8_t                    healthData[kHealthPageCount][kHealthPageMax];
 
     uint32_t                   nextTransactionID;
     uint32_t                   nextTaskID;
@@ -185,6 +215,8 @@ DroboSCSIController::free()
         OSSafeReleaseNULL(ivars->interruptAction);
         OSSafeReleaseNULL(ivars->timerSource);
         OSSafeReleaseNULL(ivars->timerAction);
+        OSSafeReleaseNULL(ivars->healthTimer);
+        OSSafeReleaseNULL(ivars->healthAction);
         OSSafeReleaseNULL(ivars->regMap);
         OSSafeReleaseNULL(ivars->portMap);
         OSSafeReleaseNULL(ivars->probeQueue);
@@ -371,7 +403,7 @@ SetStage(DroboSCSIController_IVars * iv, const char * stage)
 static void
 PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
 {
-    OSDictionary * status = OSDictionary::withCapacity(24);
+    OSDictionary * status = OSDictionary::withCapacity(64);
     if (status == nullptr) {
         return;
     }
@@ -412,6 +444,19 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     DictSetNumber(status, "PeakInflight", iv->statPeakInflight);
     DictSetNumber(status, "PeakBurst", iv->statPeakBurst);
     DictSetNumber(status, "DoorbellBusy", iv->statDoorbellBusy);
+    static const char * const kLatencyKeys[4][3] = {
+        { "Latency4KCount",   "Latency4KAvgUS",   "Latency4KMaxUS"   },
+        { "Latency64KCount",  "Latency64KAvgUS",  "Latency64KMaxUS"  },
+        { "Latency256KCount", "Latency256KAvgUS", "Latency256KMaxUS" },
+        { "Latency512KCount", "Latency512KAvgUS", "Latency512KMaxUS" },
+    };
+    for (int bucket = 0; bucket < 4; bucket++) {
+        const uint64_t count = iv->latencyCount[bucket];
+        const uint64_t perMS = iv->ticksPerMillisecond ? iv->ticksPerMillisecond : 1;
+        DictSetNumber(status, kLatencyKeys[bucket][0], count);
+        DictSetNumber(status, kLatencyKeys[bucket][1], count ? (iv->latencyTicks[bucket] / count) * 1000 / perMS : 0);
+        DictSetNumber(status, kLatencyKeys[bucket][2], iv->latencyMaxTicks[bucket] * 1000 / perMS);
+    }
     DictSetNumber(status, "Inflight", iv->inflight);
     DictSetNumber(status, "Pending", iv->pendingCount);
     DictSetNumber(status, "Reads", iv->statReads);
@@ -445,6 +490,7 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
 
 // Doorbell bits, as published by the device's own interrupt tables (verified at bring-up).
 static const uint32_t kInBitSCSIRequest   = 0x00020000;   // In[0]
+static const uint32_t kInBitTMRequest     = 0x08000000;   // In[4]
 static const uint32_t kOutBitSCSIResponse = 0x00000002;   // Out[0]
 static const uint32_t kOutBitTMResponse   = 0x00000800;   // Out[1]
 static const uint32_t kOutBitSysResponse  = 0x00000400;   // Out[2]
@@ -674,6 +720,23 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
         return false;
     }
 
+    // Passthrough channel, used only for read-only health queries. Enabled when its doorbell
+    // entries in the device's tables are what we expect.
+    iv->tmRequestListOffset  = Port32(iv, kDroboPortTMRequestOffset);
+    iv->tmResponseListOffset = Port32(iv, kDroboPortTMResponseOffset);
+    {
+        const uint32_t in4  = intIn + kDroboInterruptTableHeaderSize + 4 * (uint32_t) sizeof(DroboInterruptDef);
+        const uint32_t out1 = intOut + kDroboInterruptTableHeaderSize + 1 * (uint32_t) sizeof(DroboInterruptDef);
+        iv->healthAvailable =
+            iv->tmRequestListOffset <= limit && iv->tmResponseListOffset <= limit &&
+            Port32(iv, iv->tmRequestListOffset) >= 1 &&
+            Port32(iv, in4 + 0x04) == kDroboRegIncomingDoorbellCause && Port32(iv, in4 + 0x0C) == kInBitTMRequest &&
+            Port32(iv, in4 + 0x10) == kDroboRegOpSet &&
+            Port32(iv, out1 + 0x14) == kDroboRegOutgoingDoorbellCause && Port32(iv, out1 + 0x1C) == kOutBitTMResponse &&
+            Port32(iv, out1 + 0x4C) == ~kOutBitTMResponse && Port32(iv, out1 + 0x50) == kDroboRegOpSet;
+        iv->healthSlotCount = 8;
+    }
+
     // Requests per doorbell: the original driver stops one short of the window size.
     const uint32_t window = Port32(iv, iv->requestListOffset);
     iv->burstMax = (window > 1 && window <= 64) ? window - 1 : 1;
@@ -821,6 +884,17 @@ IMPL(DroboSCSIController, Start)
             OSSafeReleaseNULL(ivars->timerSource);
         }
 
+        // Health poll: first fire after a second, then every five.
+        if (IOTimerDispatchSource::Create(ivars->probeQueue, &ivars->healthTimer) == kIOReturnSuccess &&
+            CreateActionHandleHealthTimer(0, &ivars->healthAction) == kIOReturnSuccess) {
+            ivars->healthTimer->SetHandler(ivars->healthAction);
+            ivars->healthTimer->SetEnable(true);
+            const uint64_t first = 3000 * ivars->ticksPerMillisecond;
+            ivars->healthTimer->WakeAtTime(kIOTimerClockMachAbsoluteTime, mach_absolute_time() + first, first / 10);
+        } else {
+            OSSafeReleaseNULL(ivars->healthTimer);
+        }
+
         // MSI: one vector, delivered on the I/O queue.
         kern_return_t msi = ivars->pciDevice->ConfigureInterrupts(kIOInterruptTypePCIMessaged, 1, 1, 0);
         uint32_t index = 0xFFFFFFFF;
@@ -935,6 +1009,7 @@ IMPL(DroboSCSIController, Stop)
     };
     if (ivars->interruptSource != nullptr)                           { __sync_add_and_fetch(&remaining, 1); ivars->interruptSource->Cancel(finished); }
     if (ivars->timerSource != nullptr)                               { __sync_add_and_fetch(&remaining, 1); ivars->timerSource->Cancel(finished); }
+    if (ivars->healthTimer != nullptr)                               { __sync_add_and_fetch(&remaining, 1); ivars->healthTimer->Cancel(finished); }
     if (ivars->probeQueue != nullptr)                                { __sync_add_and_fetch(&remaining, 1); ivars->probeQueue->Cancel(finished); }
     if (ivars->targetQueue != nullptr && !ivars->targetCallInFlight) { __sync_add_and_fetch(&remaining, 1); ivars->targetQueue->Cancel(finished); }
     if (ivars->auxiliaryQueue != nullptr)                            { __sync_add_and_fetch(&remaining, 1); ivars->auxiliaryQueue->Cancel(finished); }
@@ -1192,6 +1267,9 @@ DroboSCSIController::ProcessCompletions()
         if ((out & kOutBitSummary) != 0) {
             RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitSummary);
         }
+        if ((out & kOutBitTMResponse) != 0) {
+            HealthResponse();
+        }
         if ((out & kOutBitSCSIResponse) == 0) {
             break;
         }
@@ -1231,12 +1309,27 @@ DroboSCSIController::ProcessCompletions()
                 const uint64_t bytes = transferred < length ? transferred : length;
                 iv->statReads++;
                 iv->statReadBytes += bytes;
+                const uint32_t bucket = length <= 0x1000 ? 0 : (length <= 0x10000 ? 1 : (length <= 0x40000 ? 2 : 3));
+                const uint64_t elapsed = mach_absolute_time() - iv->slots[index].submitTime;
+                iv->latencyCount[bucket]++;
+                iv->latencyTicks[bucket] += elapsed;
+                if (elapsed > iv->latencyMaxTicks[bucket]) {
+                    iv->latencyMaxTicks[bucket] = elapsed;
+                }
                 CompleteSlot(index, kSCSITaskStatus_GOOD, kSCSIServiceResponse_TASK_COMPLETE, bytes, 0, 0);
             }
             completed++;
         }
         // Hand the response list back to the Drobo; it may post the next burst at once.
         RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitSCSIResponse);
+    }
+    // Keep the published counters fresh while there is traffic: at most once a second.
+    if (completed != 0) {
+        const uint64_t now = mach_absolute_time();
+        if (now - iv->lastPublishTicks > 1000 * iv->ticksPerMillisecond) {
+            iv->lastPublishTicks = now;
+            PublishStatus(this, iv);
+        }
     }
     return completed;
 }
@@ -1302,7 +1395,7 @@ DroboSCSIController::Pump()
         if (burst > iv->statPeakBurst)          { iv->statPeakBurst = burst; }
         if (iv->inflight > iv->statPeakInflight) { iv->statPeakInflight = iv->inflight; }
     }
-    if (iv->inflight != 0 || iv->pendingCount != 0) {
+    if (iv->inflight != 0 || iv->pendingCount != 0 || iv->tmInflight) {
         ArmTimer();
     }
 }
@@ -1379,6 +1472,186 @@ DroboSCSIController::QueueRead(const SCSIUserParallelTask * task, OSAction * com
     iv->pendingRing[(iv->pendingHead + iv->pendingCount) % kDroboSlotCount] = (uint8_t) index;
     iv->pendingCount++;
     return false;
+}
+
+// MARK: Health (management pages over the passthrough channel)
+
+static uint32_t
+HealthPageLength(DroboSCSIController_IVars * iv, uint8_t page)
+{
+    switch (page) {
+        case 0x01: return 4 + 11;                               // config
+        case 0x02: return 4 + 32;                               // capacity
+        case 0x03: return 4 + 1 + 72 * iv->healthSlotCount;     // slot info
+        case 0x05: return 4 + 38;                               // settings (name, clock)
+        case 0x06: return 4 + 2;                                // protocol version
+        case 0x08: return 4 + 310;                              // firmware
+        case 0x09: return 4 + 8;                                // status, relayout count
+        default:   return 0;
+    }
+}
+
+void
+DroboSCSIController::PublishHealth()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    OSDictionary * health = OSDictionary::withCapacity(16);
+    if (health == nullptr) {
+        return;
+    }
+    static const char * const kKeys[kHealthPageCount] = {
+        "Config", "Capacity", "Slots", "Settings", "Protocol", "Firmware", "Status"
+    };
+    for (uint32_t i = 0; i < kHealthPageCount; i++) {
+        if (iv->healthLength[i] != 0) {
+            OSData * data = OSData::withBytes(iv->healthData[i], iv->healthLength[i]);
+            if (data != nullptr) {
+                health->setObject(kKeys[i], data);
+                data->release();
+            }
+        }
+    }
+    DictSetNumber(health, "Cycles", iv->healthCycles);
+    DictSetNumber(health, "Errors", iv->healthErrors);
+    DictSetNumber(health, "LastSRBResponse", iv->healthLastSRB);
+    DictSetNumber(health, "LastSCSIStatus", iv->healthLastStatus);
+    health->setObject("Available", iv->healthAvailable ? kOSBooleanTrue : kOSBooleanFalse);
+
+    OSDictionary * wrapper = OSDictionary::withCapacity(1);
+    if (wrapper != nullptr) {
+        wrapper->setObject("DroboHealth", health);
+        SetProperties(wrapper);
+        wrapper->release();
+    }
+    health->release();
+}
+
+// Sends the MODE SENSE for the current health page. Returns false if nothing was sent.
+bool
+DroboSCSIController::HealthSend()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (!iv->ready || iv->dead || iv->stopping || !iv->healthAvailable || iv->tmInflight ||
+        iv->healthPage >= kHealthPageCount) {
+        return false;
+    }
+    const uint32_t cause = Reg32(iv, kDroboRegIncomingDoorbellCause);
+    if (cause == 0xFFFFFFFF || (cause & kInBitTMRequest) != 0) {
+        return false;                               // previous request not consumed yet
+    }
+
+    const uint8_t  page   = kHealthPages[iv->healthPage];
+    const uint32_t length = HealthPageLength(iv, page);
+    uint8_t * memory = iv->requestVA + kHealthSlot * kDroboSlotSize;
+    bzero(memory, kDroboSlotSize);
+    bzero(iv->requestVA + kHealthDataOffset, kHealthPageMax);
+
+    DroboPassthroughRequest * request = (DroboPassthroughRequest *) memory;
+    DroboSGLEntry *           sgl     = (DroboSGLEntry *) (memory + sizeof(DroboPassthroughRequest));
+    request->header.hostDataBusAddress = iv->requestBusAddress + kHealthSlot * kDroboSlotSize;
+    request->header.queueIndex         = 0;
+    request->header.hostCookie         = 0x4845414C;            // "HEAL"
+    request->header.totalLength        = (uint32_t) sizeof(DroboPassthroughRequest) + (uint32_t) sizeof(DroboSGLEntry);
+    request->header.kind               = kDroboRequestKindPassthrough;
+    // One data segment: the original driver then puts the buffer's bus address straight into
+    // the pointer field and sets the "direct buffer" flag instead of describing an SGL.
+    // (Without one of the two mode flags the Drobo answers SRB response 4, error.)
+    request->flags                     = kDroboPassthroughDataInOrNone | kDroboPassthroughDirectBuffer;
+    request->transferLength            = length;
+    request->hostSGLPointer            = iv->requestBusAddress + kHealthDataOffset;
+    // MODE SENSE(10): page 0x3A (vendor), sub-page = the management page, big-endian length.
+    request->cdb[0] = 0x5A;
+    request->cdb[2] = 0x3A;
+    request->cdb[3] = page;
+    request->cdb[7] = (uint8_t) (length >> 8);
+    request->cdb[8] = (uint8_t) length;
+    sgl[0].address = iv->requestBusAddress + kHealthDataOffset;
+    sgl[0].length  = 0;                             // cleared in direct-buffer mode, as the kext does
+
+    // The original driver uses transaction ID 0 on this channel.
+    const uint32_t entry = iv->tmRequestListOffset + 8;
+    PortWrite32(iv, entry + 0x0, (uint32_t) request->header.hostDataBusAddress);
+    PortWrite32(iv, entry + 0x4, 0);
+    PortWrite32(iv, entry + 0x8, request->header.totalLength);
+    PortWrite32(iv, entry + 0xC, 0);
+    PortWrite32(iv, iv->tmRequestListOffset + 4, 1);
+    RegWrite32(iv, kDroboRegIncomingDoorbellCause, kInBitTMRequest);
+
+    iv->tmInflight = true;
+    iv->tmSubmitTime = mach_absolute_time();
+    ArmTimer();
+    return true;
+}
+
+// Called from ProcessCompletions when the passthrough response bit is set.
+void
+DroboSCSIController::HealthResponse()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    const uint32_t base = iv->tmResponseListOffset + kDroboResponseListEntriesOffset;
+    const uint64_t transferred = (uint64_t) Port32(iv, base + 0x08) | ((uint64_t) Port32(iv, base + 0x0C) << 32);
+    const uint32_t srbResponse = Port32(iv, base + 0x14);
+    const uint32_t scsiStatus  = Port32(iv, base + 0x18);
+    RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitTMResponse);
+
+    if (!iv->tmInflight || iv->healthPage >= kHealthPageCount) {
+        return;
+    }
+    iv->tmInflight = false;
+    iv->healthLastSRB = srbResponse;
+    iv->healthLastStatus = scsiStatus;
+
+    const uint32_t index = iv->healthPage;
+    const uint32_t wanted = HealthPageLength(iv, kHealthPages[index]);
+    if ((srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort) && scsiStatus == 0) {
+        uint32_t length = transferred != 0 && transferred < wanted ? (uint32_t) transferred : wanted;
+        if (length > kHealthPageMax) {
+            length = kHealthPageMax;
+        }
+        memcpy(iv->healthData[index], iv->requestVA + kHealthDataOffset, length);
+        iv->healthLength[index] = length;
+        // The config page gives the real slot count for the slot-info page.
+        if (kHealthPages[index] == 0x01 && length >= 5) {
+            const uint8_t slots = iv->healthData[index][4];
+            if (slots >= 1 && slots <= 9) {     // the 8D reports 9: eight bays plus the mSATA bay
+                iv->healthSlotCount = slots;
+            }
+        }
+    } else {
+        iv->healthErrors++;
+    }
+
+    iv->healthPage++;
+    if (iv->healthPage >= kHealthPageCount) {
+        iv->healthCycles++;
+        PublishHealth();
+    } else {
+        HealthSend();
+    }
+}
+
+void
+IMPL(DroboSCSIController, HandleHealthTimer)
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (iv->stopping) {
+        return;
+    }
+    // A health query that never came back disables health polling; block I/O is unaffected.
+    if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > 10000 * iv->ticksPerMillisecond) {
+        iv->tmInflight = false;
+        iv->healthAvailable = false;
+        iv->healthErrors++;
+        PublishHealth();
+    }
+    if (!iv->tmInflight) {
+        iv->healthPage = 0;
+        HealthSend();
+    }
+    if (iv->healthTimer != nullptr) {
+        const uint64_t period = (iv->healthCycles == 0 ? 1000 : 5000) * iv->ticksPerMillisecond;
+        iv->healthTimer->WakeAtTime(kIOTimerClockMachAbsoluteTime, mach_absolute_time() + period, period / 10);
+    }
 }
 
 void

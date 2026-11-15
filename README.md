@@ -18,12 +18,14 @@ for the direct-attached Thunderbolt units.
 | Reading your volumes | **Works** (HFS+ volumes mount read-only) |
 | Writing | **Not yet.** The driver refuses every write so it cannot damage a volume |
 | APFS volumes on the Drobo | Detected, but macOS will not mount APFS from a write-protected disk |
-| Drobo Dashboard (health, capacity, settings) | Not supported |
+| Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
+| Changing Drobo settings, firmware updates | Not supported |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |
 | Intel Macs | Not supported; use Drobo's original driver there |
 | A ready-to-run download | **Not available yet**, see below |
 
-In short: today this is a way to **get your data off** a Drobo 8D using a current Mac.
+In short: today this is a way to **get your data off** a Drobo 8D using a current Mac, and to
+see what state the unit is in while you do.
 
 ## Why there is no download yet
 
@@ -202,8 +204,10 @@ Compile without signing:
 xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Roadmap: the write path, the passthrough
-channel so Drobo Dashboard's vendor commands can work, sleep/wake handling.
+Roadmap: the write path, sleep/wake handling.
+
+The management pages the app shows are read with the protocol documented by the open-source
+[drobo-utils](https://github.com/petersilva/drobo-utils) project.
 
 ## Disclaimer
 

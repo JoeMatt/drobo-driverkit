@@ -188,6 +188,9 @@ enum DroboBlockOperation : uint32_t {
 enum DroboPassthroughFlags : uint32_t {
     kDroboPassthroughDataInOrNone = 0x00410020,
     kDroboPassthroughDataOut      = 0x00420020,
+    // Exactly one of these is OR-ed in when the request carries data:
+    kDroboPassthroughDirectBuffer = 0x00000008,   // one segment: pointer field = buffer bus address
+    kDroboPassthroughSGL          = 0x00000010,   // several: SGL follows the request at +0x58
 };
 
 struct DroboRequestHeader {              // "BaseSrbExtension"
@@ -227,7 +230,7 @@ struct DroboPassthroughRequest {         // "TransportManagerSrbExtension" minus
     DroboRequestHeader header;           // 0x00
     uint32_t flags;                      // 0x20  DroboPassthroughFlags
     uint32_t transferLength;             // 0x24
-    uint64_t hostSGLPointer;             // 0x28
+    uint64_t hostSGLPointer;             // 0x28  buffer bus address in direct-buffer mode
     uint8_t  cdb[16];                    // 0x30
     uint32_t responseBytesTransferred;   // 0x40
     uint32_t unknown0[2];                // 0x44

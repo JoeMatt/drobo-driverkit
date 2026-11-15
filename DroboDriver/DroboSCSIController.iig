@@ -69,6 +69,8 @@ protected:
         TYPE(IOInterruptDispatchSource::InterruptOccurred);
     virtual void HandleTimer(OSAction * action, uint64_t time)
         TYPE(IOTimerDispatchSource::TimerOccurred);
+    virtual void HandleHealthTimer(OSAction * action, uint64_t time)
+        TYPE(IOTimerDispatchSource::TimerOccurred);
 
     // Local (in-process) helpers.
     bool HandleTask(const SCSIUserParallelTask * task, OSAction * completion, SCSIUserParallelResponse * response) LOCALONLY;
@@ -80,6 +82,9 @@ protected:
                       uint8_t senseKey, uint8_t asc) LOCALONLY;
     void FailAllSlots(const char * stage) LOCALONLY;
     void ArmTimer() LOCALONLY;
+    bool HealthSend() LOCALONLY;
+    void HealthResponse() LOCALONLY;
+    void PublishHealth() LOCALONLY;
     uint64_t CopyToTask(const SCSIUserParallelTask * task, const void * bytes, uint64_t length) LOCALONLY;
 };
 
