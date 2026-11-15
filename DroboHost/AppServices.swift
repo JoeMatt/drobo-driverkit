@@ -237,3 +237,71 @@ final class CommandLineTool: ObservableObject {
         return error[NSAppleScript.errorMessage] as? String ?? "The system refused the change."
     }
 }
+
+/// Turns a poll's events into one notification and, if configured, one webhook call.
+///
+/// Info-level events (mounts, monitoring started) are never alerted. The webhook is a plain JSON
+/// POST to a URL the user enters; the body carries `title`, `body`, `level` and `time`, plus
+/// `text` and `content` with the same message so common chat webhooks accept it as is.
+enum Alerts {
+    static let webhookKey = "alertWebhookURL"
+
+    static func deliver(_ events: [DroboEvent]) {
+        let order: [DroboEvent.Level] = [.critical, .warning, .good]
+        let alerting = events.filter { order.contains($0.level) }
+            .sorted { (order.firstIndex(of: $0.level) ?? 9) < (order.firstIndex(of: $1.level) ?? 9) }
+        guard let first = alerting.first else { return }
+        let others = alerting.dropFirst().map(\.title)
+        let body = ([first.detail] + others).filter { !$0.isEmpty }.joined(separator: ". ")
+        if UserDefaults.standard.bool(forKey: "notificationsEnabled") {
+            Notifier.post(title: first.title, body: body)
+        }
+        send(title: first.title, body: body, level: first.level.rawValue, completion: nil)
+    }
+
+    /// Posts to the configured webhook. `completion` gets nil on success or a short reason.
+    static func send(title: String, body: String, level: String, completion: ((String?) -> Void)?) {
+        let text = UserDefaults.standard.string(forKey: webhookKey)?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard !text.isEmpty else { completion?("No webhook address is set."); return }
+        guard let url = URL(string: text), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme) else {
+            completion?("That is not a web address.")
+            return
+        }
+        let message = body.isEmpty ? title : "\(title): \(body)"
+        let payload: [String: Any] = [
+            "title": title, "body": body, "level": level,
+            "time": ISO8601DateFormatter().string(from: Date()),
+            "text": message, "content": message,
+        ]
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let failure = error?.localizedDescription ?? ((200..<300).contains(code) ? nil : "The server answered \(code).")
+            DispatchQueue.main.async { completion?(failure) }
+        }.resume()
+    }
+}
+
+/// Saves a diagnostics file chosen by the user.
+enum Diagnostics {
+    static func save() {
+        let report = DroboMonitor.diagnostics(appVersion: UpdateChecker.version, commit: UpdateChecker.builtCommit)
+        guard let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) else { return }
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "drobo-diagnostics-\(stamp.string(from: Date())).json"
+        panel.message = "The serial number and Drobo name are removed. Drive model strings are included."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.runModal()
+        }
+    }
+}

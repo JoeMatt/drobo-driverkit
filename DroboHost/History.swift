@@ -17,9 +17,13 @@ struct DroboEvent: Codable, Identifiable {
 final class EventLog: ObservableObject {
     @Published private(set) var events: [DroboEvent] = []
 
+    /// Called once per poll with the events that poll produced, for notifications and webhooks.
+    var onChanges: (([DroboEvent]) -> Void)?
+
     private let persist: Bool
     private let limit = 1000
     private var primed = false
+    private var batch: [DroboEvent]?
 
     private static var fileURL: URL? {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -35,7 +39,9 @@ final class EventLog: ObservableObject {
     }
 
     func add(_ level: DroboEvent.Level, _ title: String, _ detail: String = "", date: Date = Date()) {
-        events.insert(DroboEvent(date: date, level: level, title: title, detail: detail), at: 0)
+        let event = DroboEvent(date: date, level: level, title: title, detail: detail)
+        batch?.append(event)
+        events.insert(event, at: 0)
         if events.count > limit { events.removeLast(events.count - limit) }
         save()
     }
@@ -56,6 +62,14 @@ final class EventLog: ObservableObject {
 
     /// Compares two consecutive polls and records what changed.
     func observe(previous: DroboSnapshot, latest: DroboSnapshot, previousLUNs: [DroboLUN], latestLUNs: [DroboLUN]) {
+        batch = []
+        compare(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: latestLUNs)
+        let produced = batch ?? []
+        batch = nil
+        if !produced.isEmpty { onChanges?(produced) }
+    }
+
+    private func compare(previous: DroboSnapshot, latest: DroboSnapshot, previousLUNs: [DroboLUN], latestLUNs: [DroboLUN]) {
         let name = latest.name.isEmpty ? "Drobo" : latest.name
         guard primed else {
             primed = true

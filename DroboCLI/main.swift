@@ -20,6 +20,7 @@ commands
   all                    device, drives and volumes
   get <key>              one bare value, for scripts and status lines
   keys                   list the keys `get` accepts
+  diagnostics            raw driver state and management pages as JSON, serial and name redacted
 
 options
   --json                 machine-readable output (status, device, drives, volumes, all)
@@ -338,6 +339,10 @@ func run() -> Int32 {
         print(result)
     case "keys":
         print(keys)
+        return 0
+    case "diagnostics":
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        printJSON(DroboMonitor.diagnostics(appVersion: version, commit: ""))
         return 0
     default:
         fail("unknown command \(command)\n\n\(usage)")

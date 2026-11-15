@@ -51,11 +51,25 @@ drobo volume "Time Machine" # one volume, by name or unit number
 drobo get percent           # one bare value; `drobo keys` lists them
 drobo all --json            # for dashboards
 drobo --watch 5             # redraw every 5 seconds
+drobo diagnostics > d.json  # raw driver state for a bug report, serial and name removed
 ```
 
 The exit status is 0 when healthy, 1 for a warning or a rebuild, 2 when the Drobo needs
 attention and 3 when it is not connected, so `drobo >/dev/null || notify` works in scripts.
 `--demo healthy` or `--demo rebuilding` prints made-up data without a Drobo.
+
+## Alerts and diagnostics
+
+With notifications on (Settings), the app tells you when a status warning appears or clears, a
+drive changes state, the driver reports I/O errors, or the Drobo disconnects, stops responding or
+comes back. Settings also takes an optional webhook address: each alert is then posted there as a
+small JSON message (`title`, `body`, `level`, `time`, plus `text` and `content` for chat
+services), so it reaches you when nobody is at the Mac.
+
+**Save Diagnostics…** (app menu, or the Advanced tab) writes what the driver publishes, including
+the raw status pages, to a JSON file. The Drobo's serial number and name are overwritten; drive
+model strings are kept; volume names are not included. Nothing is sent to the Drobo or uploaded.
+Attach that file to bug reports.
 
 ## Why there is no download yet
 

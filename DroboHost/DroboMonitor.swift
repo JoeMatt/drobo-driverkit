@@ -453,6 +453,80 @@ enum DroboMonitor {
                       megabytes / max(writeSeconds, 0.001), megabytes / max(readSeconds, 0.001))
     }
 
+    // MARK: Diagnostics
+
+    /// Everything the driver publishes, as a JSON-ready dictionary: its counters (`DroboStatus`)
+    /// and the raw management pages (`DroboHealth`), with binary data as hex. For bug reports and
+    /// as fixture bytes for decoder tests.
+    ///
+    /// The Drobo's serial number and name are overwritten wherever their bytes appear, in strings
+    /// and inside the raw pages, so the page layouts survive but the identifiers do not. Volume
+    /// names are never included. Drive model strings are kept.
+    static func diagnostics(appVersion: String, commit: String) -> [String: Any] {
+        let system = ProcessInfo.processInfo.operatingSystemVersionString
+        var report: [String: Any] = [
+            "format": 1,
+            "captured": ISO8601DateFormatter().string(from: Date()),
+            "appVersion": appVersion,
+            "appCommit": commit,
+            "macOS": system,
+            "note": "Serial number and Drobo name are redacted. Review before sharing: drive model strings are included.",
+        ]
+        guard let properties = driverProperties() else {
+            report["driver"] = "not running"
+            return report
+        }
+        let current = snapshot()
+        let secrets = [current.serial, current.name].filter { $0.count >= 3 }
+        var driver: [String: Any] = [:]
+        for key in ["DroboStatus", "DroboHealth", "IOUserClass", "CFBundleIdentifier", "IOPCIMatch"] {
+            if let value = properties[key] { driver[key] = jsonReady(value, redacting: secrets) }
+        }
+        report["driver"] = driver
+        report["decoded"] = [
+            "ready": current.ready,
+            "stage": current.stage,
+            "firmware": current.firmware,
+            "statusFlags": current.statusFlags.map { String(format: "0x%08X", $0) } ?? "none",
+            "statusLines": current.statusLines,
+            "relayoutCount": current.relayoutCount,
+            "slots": current.slots.map { ["bay": $0.id, "status": $0.statusText, "statusCode": Int($0.statusCode), "model": $0.model] },
+            "lunBlocks": current.lunBlocks,
+        ] as [String: Any]
+        return report
+    }
+
+    static func jsonReady(_ value: Any, redacting secrets: [String]) -> Any {
+        switch value {
+        case let dictionary as [String: Any]:
+            return dictionary.mapValues { jsonReady($0, redacting: secrets) }
+        case let array as [Any]:
+            return array.map { jsonReady($0, redacting: secrets) }
+        case let data as Data:
+            var bytes = [UInt8](data)
+            for secret in secrets {
+                let pattern = Array(secret.utf8)
+                guard bytes.count >= pattern.count else { continue }
+                var index = 0
+                while index <= bytes.count - pattern.count {
+                    if Array(bytes[index..<(index + pattern.count)]) == pattern {
+                        for offset in 0..<pattern.count { bytes[index + offset] = 0x58 }   // "X"
+                        index += pattern.count
+                    } else {
+                        index += 1
+                    }
+                }
+            }
+            return bytes.map { String(format: "%02x", $0) }.joined()
+        case let string as String:
+            return secrets.reduce(string) { $0.replacingOccurrences(of: $1, with: String(repeating: "X", count: $1.count)) }
+        case let number as NSNumber:
+            return number
+        default:
+            return String(describing: value)
+        }
+    }
+
     // MARK: Registry access
 
     private static func driverService() -> io_service_t? {

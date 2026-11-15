@@ -35,6 +35,7 @@ struct DroboHostApp: App {
             CommandGroup(after: .appInfo) {
                 Button(commandLine.actionTitle) { commandLine.performAction() }
                     .disabled(!commandLine.canAct)
+                Button("Save Diagnostics…") { Diagnostics.save() }
             }
         }
 
@@ -181,6 +182,8 @@ struct PreferencesView: View {
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
     @AppStorage(AppDelegate.behaviorKey) private var quitBehavior = ""
+    @AppStorage(Alerts.webhookKey) private var webhook = ""
+    @State private var webhookStatus = ""
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError = ""
 
@@ -204,6 +207,23 @@ struct PreferencesView: View {
                 .onChange(of: notificationsEnabled) { _, enabled in
                     if enabled { Notifier.requestPermission() }
                 }
+            Text("Alerts cover status warnings, drive changes, I/O errors, and the Drobo disconnecting, restarting or coming back.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TextField("Also send alerts to", text: $webhook, prompt: Text("https://… (optional webhook)"))
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+            HStack {
+                Button("Send Test Alert") {
+                    webhookStatus = "Sending…"
+                    Alerts.send(title: "Drobo test alert", body: "Alerts from Drobo DriverKit will arrive here.", level: "info") {
+                        webhookStatus = $0 ?? "Sent."
+                    }
+                }
+                .disabled(webhook.trimmingCharacters(in: .whitespaces).isEmpty)
+                Text(webhookStatus).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Each alert is sent as a small JSON message to that address, so it reaches you when nobody is at this Mac. Leave it empty to keep alerts on this Mac only.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("Check for updates", selection: $updateChannel) {
                 ForEach(UpdateChannel.allCases) { Text($0.label).tag($0.rawValue) }
             }
@@ -257,10 +277,11 @@ final class DashboardModel: ObservableObject {
     private var rebuildStart: (date: Date, count: UInt32)?
     private var writableSeeded = false
     private var awaitingCommand: (count: UInt64, name: String)?
-    private var lastFlags: UInt32?
-    private var wasRebuilding = false
 
-    init() { start() }
+    init() {
+        events.onChanges = { Alerts.deliver($0) }
+        start()
+    }
 
     /// One line for the menu bar drop-down.
     var summaryLine: String {
@@ -277,20 +298,6 @@ final class DashboardModel: ObservableObject {
         if flags & 0x0132 != 0 { return "externaldrive.badge.xmark" }
         if snapshot.isRebuilding || flags & 0x00C4 != 0 { return "externaldrive.badge.exclamationmark" }
         return "externaldrive.fill"
-    }
-
-    private func notifyChanges(_ latest: DroboSnapshot) {
-        guard UserDefaults.standard.bool(forKey: "notificationsEnabled"), let flags = latest.statusFlags else { return }
-        defer { lastFlags = flags; wasRebuilding = latest.isRebuilding }
-        guard let previous = lastFlags else { return }
-        let added = flags & ~previous
-        let name = latest.name.isEmpty ? "Drobo" : latest.name
-        if added & 0x0132 != 0 || added & 0x0040 != 0 {
-            let lines = latest.statusLines.filter { !$0.hasPrefix("Status bit") }
-            Notifier.post(title: "\(name) needs attention", body: lines.joined(separator: ". "))
-        } else if wasRebuilding, !latest.isRebuilding {
-            Notifier.post(title: "\(name) finished rebuilding", body: "Data protection is complete.")
-        }
     }
 
     func start() {
@@ -330,8 +337,6 @@ final class DashboardModel: ObservableObject {
         lastRead = latest.readBytes
         lastWrite = latest.writeBytes
         lastSample = now
-
-        notifyChanges(latest)
 
         // Rebuild estimate from how fast the Drobo's "blocks left" counter falls. The counter
         // can also rise while the Drobo is still working out how much there is to do, which

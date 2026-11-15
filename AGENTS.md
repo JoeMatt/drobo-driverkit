@@ -30,6 +30,10 @@ That unsigned build is the CI check and the only thing you can run without the h
 are no unit tests yet (adding host-side tests for the page decoders in `DroboMonitor.swift` is
 a good first PR).
 
+A diagnostics file (`drobo diagnostics`, or Save Diagnostics… in the app) holds the raw
+management pages with identifiers removed: ask the maintainer for one when you need real
+fixture bytes.
+
 To look at the dashboard without a Drobo, run the built app with made-up data:
 `build/Build/Products/Debug/DroboDriverKit.app/Contents/MacOS/DroboDriverKit -demo healthy`
 (or `-demo rebuilding`; add `-demoTab drives` to open on a tab). The UI's design primitives are

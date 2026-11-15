@@ -13,7 +13,7 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
    only: no destructive commands in the driver.
 2. **Unit tests for the management page decoders** [app, good first issue]. `DroboMonitor.swift`
    has no tests. Add a test target with fixture bytes per page (protocol notes 11.5 gives real
-   headers and layouts) and run it in `build.yml`.
+   headers and layouts; a diagnostics file from the maintainer gives whole pages) and run it in `build.yml`.
 3. **Verify the write path** [driver, needs hardware]. Enable Allow writes on a backed-up
    volume, run Test Writing, then copy a few GB and compare checksums after eject and remount.
    Record the result in protocol notes section 11.

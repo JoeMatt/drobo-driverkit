@@ -544,7 +544,22 @@ struct ContentView: View {
             }
             .fixedSize(horizontal: false, vertical: true)
             commandLineCard
+            diagnosticsCard
         }
+    }
+
+    private var diagnosticsCard: some View {
+        Bezel(title: "Diagnostics") {
+            HStack(spacing: 12) {
+                Text("Saves what the driver publishes, including the raw status pages, to a file for bug reports and decoder tests. The serial number and Drobo name are removed; nothing is sent to the Drobo or uploaded.")
+                    .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Save Diagnostics…") { Diagnostics.save() }
+                    .buttonStyle(PillButtonStyle(icon: "square.and.arrow.down"))
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var tools: some View {
