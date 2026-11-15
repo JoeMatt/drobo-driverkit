@@ -117,27 +117,30 @@ struct DroboSnapshot {
     var unprotectedBytes: UInt64?
     var slots: [DroboSlot] = []
 
+    /// Status flag bits and what they mean (drobo-utils), in display order.
+    static let statusTable: [(UInt32, String)] = [
+        (0x0002, "Red alert: capacity critically low"),
+        (0x0004, "Yellow alert: capacity low"),
+        (0x0008, "No disks"),
+        (0x0010, "Bad disk"),
+        (0x0020, "Too many missing disks"),
+        (0x0040, "No redundancy: a second failure would lose data"),
+        (0x0080, "No hot spare"),
+        (0x0100, "No space left"),
+        (0x0200, "Data protection in progress (rebuilding)"),
+        (0x0400, "Format in progress"),
+        (0x0800, "Mismatched disks"),
+        (0x1000, "Unknown firmware version"),
+        (0x2000, "New firmware installed"),
+        (0x4000, "New volume available after restart"),
+        (0x8000, "Status bit 0x8000 (meaning not documented)"),
+        (0x1_0000, "Status bit 0x10000 (meaning not documented)"),
+        (0x1000_0000, "Unknown error"),
+    ]
+
     var statusLines: [String] {
         guard let flags = statusFlags else { return [] }
-        let table: [(UInt32, String)] = [
-            (0x0002, "Red alert: capacity critically low"),
-            (0x0004, "Yellow alert: capacity low"),
-            (0x0008, "No disks"),
-            (0x0010, "Bad disk"),
-            (0x0020, "Too many missing disks"),
-            (0x0040, "No redundancy: a second failure would lose data"),
-            (0x0080, "No hot spare"),
-            (0x0100, "No space left"),
-            (0x0200, "Data protection in progress (rebuilding)"),
-            (0x0400, "Format in progress"),
-            (0x0800, "Mismatched disks"),
-            (0x1000, "Unknown firmware version"),
-            (0x2000, "New firmware installed"),
-            (0x4000, "New volume available after restart"),
-            (0x8000, "Status bit 0x8000 (meaning not documented)"),
-            (0x1_0000, "Status bit 0x10000 (meaning not documented)"),
-            (0x1000_0000, "Unknown error"),
-        ]
+        let table = Self.statusTable
         let lines = table.filter { flags & $0.0 != 0 }.map { $0.1 }
         return lines.isEmpty ? ["Healthy"] : lines
     }

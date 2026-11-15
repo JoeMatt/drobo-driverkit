@@ -667,6 +667,24 @@ Decoded from the kext and implemented; **none of this section has run on hardwar
   minutes u16 + unused network fields, per drobo-utils' `SetOptions`. Exposed in the app only
   when the unit is healthy.
 
+### 11.8 Blink command restarts the unit (app v0.23.0, 2026-11-15)
+
+Reported by the maintainer on the 8D (firmware 4.2.3) while it was rebuilding: after pressing
+Blink Lights the lights never blinked, the Drobo stopped responding for a few minutes and then
+restarted, and this repeated. During one such restart the driver was seen sitting in the
+`waiting-for-firmware` stage for about five minutes before returning to `ready`.
+
+- What is sent: vendor command `EA 10 00 06 00 <seq> 20 00 01 00` with one byte data-in, on the
+  passthrough channel, the format taken from drobo-utils (11.6). It was never verified on this
+  model.
+- This is one person's observation, not a controlled test: the unit was mid-rebuild and had no
+  redundancy, and no capture of the command's response was taken. It was not retried to confirm,
+  because each attempt costs a restart.
+- **Blink is turned off in the app** until the 8D's own format is known (backlog item 1,
+  Drobo Dashboard). The driver still accepts the command from its user client.
+- **Standby (Shut Down) is the same command with sub-command `0D`** and is equally unverified.
+  Treat it as suspect. Rename and Settings use MODE SELECT, a different path.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

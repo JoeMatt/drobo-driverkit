@@ -21,8 +21,12 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
    with zero errors after writes and an eject; a timeout must disable forwarding, not hang I/O.
 5. **Verify sleep/wake** [driver, needs hardware]. Sleep and wake with volumes mounted; I/O
    resumes, Wakes increments, nothing is force-ejected.
-6. **Verify Blink, Rename, Shut Down, Settings** [driver, app, needs hardware]. Formats come
-   from drobo-utils. Blink first; Settings only on a healthy unit.
+6. **Verify Rename, Shut Down, Settings; fix Blink** [driver, app, needs hardware]. Formats
+   come from drobo-utils. **Blink is turned off**: as sent it made the 8D stop responding and
+   restart (protocol notes 11.8). Do not re-enable it, and do not test Shut Down (the same
+   vendor command with another sub-code), until the 8D's format is confirmed from Drobo
+   Dashboard (item 1). Never test either on a unit that is rebuilding. Settings only on a
+   healthy unit.
 7. **General interpreter for the doorbell tables** [driver, protocol]. The driver hard-codes the
    8D's doorbell values and only checks them against the device's tables. Implement the
    and/or/xor/set/none interpreter from protocol notes section 6 so other firmware and models
@@ -50,6 +54,6 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     item 1. Also decode what is already polled but unused: the device clock (settings page), the
     protocol version and the config page's LUN limits, and work out the slot record's "short
     identity" field and trailing u32 from a hardware dump.
-14. **Events and performance history** [app]. The app keeps no history. Record status changes
-    (the same transitions that post notifications) into an Events tab, and sample the driver's
-    throughput and latency counters into a Performance tab with a chart. No protocol work.
+14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
+    performance history across app restarts, add latency over time (the driver publishes only
+    running totals, so the app must difference them), and export the event log.

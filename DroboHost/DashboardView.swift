@@ -5,13 +5,16 @@ import SwiftUI
 /// down, settings) live here.
 struct ContentView: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case summary = "Summary", drives = "Drives", volumes = "Volumes", advanced = "Advanced"
+        case summary = "Summary", drives = "Drives", volumes = "Volumes"
+        case events = "Events", performance = "Performance", advanced = "Advanced"
         var id: String { rawValue }
         var symbol: String {
             switch self {
             case .summary: return "square.grid.2x2"
             case .drives: return "internaldrive"
             case .volumes: return "externaldrive"
+            case .events: return "clock"
+            case .performance: return "chart.xyaxis.line"
             case .advanced: return "slider.horizontal.3"
             }
         }
@@ -43,7 +46,7 @@ struct ContentView: View {
         let forced = UserDefaults.standard.double(forKey: "demoMaxHeight")
         if Demo.scenario != nil, forced > 0 { return forced }
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main
-        return min(700, max(420, (screen?.visibleFrame.height ?? 800) - 40))
+        return min(760, max(420, (screen?.visibleFrame.height ?? 800) - 40))
     }
 
     var body: some View {
@@ -60,6 +63,8 @@ struct ContentView: View {
                         case .summary: summaryTab
                         case .drives: drivesTab
                         case .volumes: volumesTab
+                        case .events: EventsTab(log: dashboard.events)
+                        case .performance: PerformanceTab(history: dashboard.performance)
                         case .advanced: advancedTab
                         }
                     }
@@ -82,7 +87,7 @@ struct ContentView: View {
             Button("Eject All and Shut Down") { dashboard.shutDown() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("All Drobo volumes are ejected first, then the Drobo flushes its caches and powers down.")
+            Text("All Drobo volumes are ejected first, then the Drobo is asked to flush its caches and power down. This command has not been verified on hardware, and a related one (Blink Lights) made the Drobo restart instead. If the Drobo is rebuilding, leave it running.")
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
         .confirmationDialog("Change which volumes can be written?", isPresented: $confirmWritable) {
@@ -208,7 +213,7 @@ struct ContentView: View {
             .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top, spacing: 10) {
                 bayLights
-                details.frame(width: 420)
+                details.frame(width: 340)
             }
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -309,9 +314,14 @@ struct ContentView: View {
     /// One light per bay, like the front of the unit. Opens the Drives tab.
     private var bayLights: some View {
         let slots = dashboard.snapshot.slots
-        return Bezel(title: "Drive bays") {
-            Button("All drives") { withAnimation(Theme.spring) { tab = .drives } }
-                .buttonStyle(PillButtonStyle(icon: "arrow.right", compact: true))
+        return Bezel(title: "Drives and volumes") {
+            HStack(spacing: 6) {
+                Button("Eject All") { dashboard.ejectAll() }
+                    .buttonStyle(PillButtonStyle(icon: "eject", compact: true))
+                    .disabled(dashboard.volumes.isEmpty || dashboard.busy)
+                Button("All drives") { withAnimation(Theme.spring) { tab = .drives } }
+                    .buttonStyle(PillButtonStyle(icon: "arrow.right", compact: true))
+            }
         } content: {
             if slots.isEmpty {
                 Text("No bay information yet.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
@@ -331,13 +341,37 @@ struct ContentView: View {
                     }
                 }
                 .padding(.top, 4)
-                let filled = slots.filter { !$0.isEmpty }
-                HStack(spacing: 0) {
-                    stat("Drives", "\(filled.count) of \(slots.count)")
-                    stat("Raw capacity", DashboardModel.bytes(filled.reduce(0) { $0 + $1.physicalBytes }))
-                    stat("Not healthy", "\(attentionBays)")
+                Rectangle().fill(Theme.hairline).frame(height: 1).padding(.top, 4)
+                VStack(spacing: 0) {
+                    ForEach(dashboard.luns) { lun in
+                        HStack(spacing: 8) {
+                            Image(systemName: "internaldrive")
+                                .font(.system(size: 12, weight: .light))
+                                .foregroundStyle(lun.isMounted ? Theme.primary : Theme.tertiary)
+                                .frame(width: 16)
+                            Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
+                                .font(Theme.text(12.5, .medium))
+                                .foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary).lineLimit(1)
+                            Text(DashboardModel.bytes(lun.bytes) + (lun.writable ? " · read/write" : ""))
+                                .font(Theme.text(10.5)).foregroundStyle(lun.writable ? Theme.amber : Theme.tertiary)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if let url = dashboard.volumes.first(where: { $0.lun == lun.id })?.id {
+                                Button("Open") { NSWorkspace.shared.open(url) }
+                                    .buttonStyle(PillButtonStyle(compact: true))
+                                    .help("Open in Finder")
+                            }
+                            Button(lun.isMounted ? "Unmount" : "Mount") { dashboard.setMounted(!lun.isMounted, lun: lun) }
+                                .buttonStyle(PillButtonStyle(compact: true))
+                                .disabled(lun.bsdName == nil || dashboard.busy)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    if dashboard.luns.isEmpty {
+                        Text("No volumes reported.").font(Theme.text(12)).foregroundStyle(Theme.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                .padding(.top, 6)
             }
         }
     }
@@ -353,7 +387,12 @@ struct ContentView: View {
                 if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold {
                     row("gauge.with.dots.needle.33percent", "Capacity alerts", "\(yellow)% and \(red)%")
                 }
-                row("externaldrive", "Volumes", "\(dashboard.luns.filter(\.isMounted).count) mounted of \(dashboard.luns.count)")
+                row("internaldrive", "Drives", "\(snapshot.slots.filter { !$0.isEmpty }.count) of \(snapshot.slots.count) bays")
+                row("externaldrive.badge.checkmark", "Raw capacity", DashboardModel.bytes(snapshot.slots.reduce(0) { $0 + $1.physicalBytes }))
+                if !dashboard.message.isEmpty {
+                    Text(dashboard.message).font(Theme.text(11)).foregroundStyle(Theme.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -362,10 +401,7 @@ struct ContentView: View {
 
     private var drivesTab: some View {
         Bezel(title: "Drives") {
-            Button("Blink Lights") { dashboard.blink() }
-                .buttonStyle(PillButtonStyle(icon: "light.max", compact: true))
-                .disabled(dashboard.busy || !dashboard.snapshot.healthAvailable)
-                .help("Makes the Drobo's lights blink so you can tell which unit this is")
+            EmptyView()
         } content: {
             if dashboard.snapshot.slots.isEmpty {
                 Text("No bay information yet.").font(Theme.text(13)).foregroundStyle(Theme.secondary)
@@ -515,8 +551,6 @@ struct ContentView: View {
         let unavailable = dashboard.busy || !dashboard.snapshot.healthAvailable
         return Bezel(title: "Tools") {
             HStack(spacing: 8) {
-                Button("Blink Lights") { dashboard.blink() }
-                    .buttonStyle(PillButtonStyle(icon: "light.max")).disabled(unavailable)
                 Button("Rename…") {
                     newName = dashboard.snapshot.name
                     showRename = true

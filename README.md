@@ -19,7 +19,8 @@ for the direct-attached Thunderbolt units.
 | Writing | **Experimental and off by default.** You enable it per volume in the app. Implemented but not yet verified on hardware: keep a copy of anything on a volume you make writable |
 | APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
-| Blink lights, rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; blink, rename and shutdown not yet verified on hardware |
+| Rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; rename and shutdown not yet verified on hardware |
+| Blink lights | **Turned off.** As sent today it makes the 8D stop responding and restart |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | Untested. They use a different PCI ID; see [Other models](#other-models) |

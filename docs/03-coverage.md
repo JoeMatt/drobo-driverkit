@@ -60,7 +60,7 @@ protocol reference are marked as needing that analysis.
 | Capacity alert thresholds (read) | `3A/30` | read, not shown | partial |
 | Capacity alert thresholds (change) | MODE SELECT `7A/30` | not implemented | no |
 | Rename the Drobo, set its clock | MODE SELECT `7A/05` | Rename | unverified |
-| Blink lights (identify) | vendor `EA` command `06` | Blink Lights | unverified |
+| Blink lights (identify) | vendor `EA` command `06` | removed from the app | **disabled**: on hardware the unit stopped responding and restarted, lights never blinked (protocol notes 11.8) |
 | Shut down / standby | vendor `EA` command `0D` | Shut Down | unverified |
 | Restart | unknown | not implemented | no: needs Dashboard analysis |
 | Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons) |
@@ -106,14 +106,15 @@ publishes its raw bytes under `DroboHealth`.
 | Slot count, max LUNs, max LUN size | Config page `01` | polled; only the slot count is used |
 | Protocol version | Protocol page `06` | polled, not decoded |
 | Dual disk redundancy, spin-down | Options page `31` | shown (Summary), editable (Advanced) |
-| Identify | Blink command | in the app (Drives, Advanced), unverified on hardware |
+| Identify | Blink command | **disabled**: restarts the unit as currently sent (protocol notes 11.8) |
 | Open in Finder | no protocol needed | in the app (Volumes) |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
 | Temperature (average, max, controller) | no page in the notes or drobo-utils reference covers it | **unknown**, needs backlog item 1 |
 | Fan speed, uptime, power state | same | **unknown** |
 | Hot data cache, disk pack status, data integrity | same | **unknown** |
-| Events log, scans | same | **unknown** |
-| Performance history | would be collected by the app from the counters above | not implemented |
+| Events log | the Drobo's own log: no reference | **unknown**. The Events tab instead records changes the app sees between polls (alerts, drive states, restarts, mounts) |
+| Scans | same | **unknown** |
+| Performance history | sampled by the app from the counters above | shown (Performance): last hour per poll, last 24 hours per minute, in memory only |
 | Several Drobos in one window | app reads the first controller only | not implemented, backlog item 11 |
 
 Nothing in the "unknown" rows is guessed into code. Each needs a reference (Drobo Dashboard's own

@@ -246,6 +246,10 @@ final class DashboardModel: ObservableObject {
     @Published var pendingWritable: Set<Int> = []
     @Published var busy = false
 
+    /// History for the Events and Performance tabs. Demo mode never touches the saved log.
+    let events = EventLog(persist: Demo.scenario == nil)
+    let performance = PerformanceHistory()
+
     private var timer: Timer?
     private var lastRead: UInt64 = 0
     private var lastWrite: UInt64 = 0
@@ -310,6 +314,8 @@ final class DashboardModel: ObservableObject {
             if !writableSeeded {
                 pendingWritable = Set(luns.filter(\.writable).map(\.id))
                 writableSeeded = true
+                events.seedDemo(rebuilding: scenario == "rebuilding")
+                performance.seedDemo(rebuilding: scenario == "rebuilding")
             }
             return
         }
@@ -356,9 +362,15 @@ final class DashboardModel: ObservableObject {
             awaitingCommand = nil
         }
 
+        let previous = snapshot
+        let previousLUNs = luns
         snapshot = latest
         volumes = DroboMonitor.volumes()
         luns = DroboMonitor.luns(latest, volumes: volumes)
+        events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
+        if latest.driverPresent {
+            performance.record(date: now, readRate: readRate, writeRate: writeRate, blocksLeft: latest.relayoutCount)
+        }
         if !writableSeeded, latest.ready {
             pendingWritable = Set(luns.filter(\.writable).map(\.id))
             writableSeeded = true
@@ -407,7 +419,12 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    func blink() { command(.blink, label: "Blink lights") }
+    /// Turned off. On the maintainer's Drobo 8D (firmware 4.2.3) sending the blink command
+    /// (vendor `EA`, sub-command `06`) was followed each time by the unit not responding for a
+    /// few minutes and then restarting, and the lights never blinked. See protocol notes 11.8.
+    /// Nothing is sent until the command's format for this model is known.
+    static let blinkDisabledReason = "Blink Lights is turned off: on this Drobo it made the unit stop responding and restart."
+    func blink() { message = Self.blinkDisabledReason }
 
     func rename(to name: String) {
         command(.rename, argument: UInt32(Date().timeIntervalSince1970), name: name, label: "Rename")
