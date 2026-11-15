@@ -39,8 +39,8 @@ Screenshots use the app's built-in demo data (`-demo healthy`).
 | Per-drive rotation speed, SSD life remaining, error count, firmware and serial; enclosure temperature and uptime | **Works** on the 8D once turned on (Advanced → Read drive and system details). The 8D does not report per-drive temperature, fan or power supply data, and no Drobo exposes full S.M.A.R.T. data |
 | Drobo-style Finder icon with a fullness bar | Volumes → Set Icon, on volumes that allow writes (the icon is a file on the volume) |
 | Rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; rename and shutdown not yet verified on hardware |
-| Blink lights, restart | In the app since v0.27.0, using the command format Drobo's own software sends. Not yet verified on hardware; an earlier, wrong format made the 8D hang |
-| LED brightness, SSD cache on/off | Not available yet |
+| Blink lights | **Works** (v0.27.1 and later) |
+| Restart, shut down, LED brightness | In the app, using the command format Drobo's own software sends. Not yet verified on hardware |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |

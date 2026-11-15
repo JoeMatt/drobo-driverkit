@@ -4,7 +4,7 @@ What the original Drobo software did, and where this project stands. Status valu
 **verified** (seen working on a Drobo 8D), **unverified** (implemented, compiles, not yet run
 on hardware), **partial**, **no**.
 
-Last updated for driver v0.27.0.
+Last updated for driver v0.28.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -109,10 +109,10 @@ publishes its raw bytes under `DroboHealth`.
 | Slot count, max LUNs, max LUN size | Config page `01` | polled; only the slot count is used |
 | Protocol version | Protocol page `06` | polled, not decoded |
 | Dual disk redundancy, spin-down | Options page `31` | shown (Summary), editable (Advanced) |
-| Identify | Blink, system operation `06` | in the app (Drives, Advanced) with corrected framing since v0.27.0; unverified |
+| Identify | Blink, system operation `06` | **verified** on the 8D with v0.27.1 (Drives, Advanced). Blinks for a long time; no stop or timed form yet |
 | Restart | system operation `03` | in the app (Advanced) since v0.27.0; unverified |
-| LED brightness | system operations `18` / `21` | not implemented: value range unknown |
-| SSD (hot data) cache on/off | a feature bit in options page `31` | not implemented: bit not identified |
+| LED brightness | system operations `18` / `21`, level 0 to 9 (protocol notes 11.15) | in the app (Advanced → Settings) since v0.28.0; unverified |
+| SSD (hot data) cache | no command found; Dashboard only shows a status | Summary shows whether the SSD bay holds a healthy drive |
 | Open in Finder | no protocol needed | in the app (Volumes) |
 | Drobo-style Finder volume icon with a fullness bar | a `.VolumeIcon.icns` written to the volume | in the app (Volumes → Set Icon), writable volumes only; checked on a disk image, not on a Drobo |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |

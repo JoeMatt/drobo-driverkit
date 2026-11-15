@@ -38,6 +38,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var editDual = false
     @State private var editSpin = 0
+    @State private var editDim = 0.0
     @Namespace private var tabSelection
 
     /// The window opens at one size for every tab, so switching tabs never resizes it, and can
@@ -401,6 +402,10 @@ struct ContentView: View {
                 if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold {
                     row("gauge.with.dots.needle.33percent", "Capacity alerts", "\(yellow)% and \(red)%")
                 }
+                // Drobo's software shows the cache as active when the SSD bay holds a good drive.
+                if let ssd = snapshot.slots.first(where: { $0.id == 8 }) {
+                    row("memorychip", "SSD cache drive", ssd.isEmpty ? "None installed" : (ssd.statusCode & 0x0F == 3 ? "Installed, healthy" : ssd.statusText))
+                }
                 row("internaldrive", "Drives", "\(snapshot.slots.filter { !$0.isEmpty }.count) of \(snapshot.slots.count) bays")
                 row("externaldrive.badge.checkmark", "Raw capacity", DashboardModel.bytes(snapshot.slots.reduce(0) { $0 + $1.physicalBytes }))
                 if !dashboard.message.isEmpty {
@@ -656,6 +661,8 @@ struct ContentView: View {
                 Button("Settings…") {
                     editDual = dashboard.snapshot.dualDiskRedundancy ?? false
                     editSpin = dashboard.snapshot.spinDownMinutes ?? 0
+                    editDim = Double(dashboard.snapshot.dimLevel ?? 0)
+                    dashboard.readDimLevel()
                     showSettings = true
                 }
                 .buttonStyle(PillButtonStyle(icon: "slider.horizontal.3"))
@@ -822,9 +829,23 @@ struct ContentView: View {
                 if ![0, 5, 10, 15, 30, 60, 120].contains(editSpin) { Text("\(editSpin) minutes").tag(editSpin) }
             }
             if unsafe {
-                Label("Settings cannot be changed while the Drobo is rebuilding or has no redundancy.", systemImage: "exclamationmark.triangle")
+                Label("Redundancy and spin-down cannot be changed while the Drobo is rebuilding or has no redundancy.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Theme.amber).font(Theme.text(12)).fixedSize(horizontal: false, vertical: true)
             }
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            HStack(spacing: 10) {
+                Text("Dim lights").font(Theme.text(13))
+                Slider(value: $editDim, in: 0...9, step: 1).tint(Theme.emerald)
+                Text("\(Int(editDim))").font(Theme.mono(12)).foregroundStyle(Theme.secondary).frame(width: 14)
+                Button("Set") { dashboard.setDimLevel(Int(editDim)) }
+                    .buttonStyle(PillButtonStyle(compact: true))
+                    .disabled(!snapshot.dimmingAvailable || dashboard.busy)
+            }
+            Text(snapshot.dimmingAvailable
+                 ? "0 is brightest, 9 is dimmest, as in Drobo's own settings." + (snapshot.dimLevel.map { " The Drobo reports level \($0) now." } ?? "")
+                 : "Needs driver 0.28.0 or later (press Activate on the Advanced tab).")
+                .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+                .onChange(of: snapshot.dimLevel) { _, level in if let level { editDim = Double(level) } }
             HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel") { showSettings = false }

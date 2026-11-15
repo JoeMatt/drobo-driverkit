@@ -877,6 +877,24 @@ Not implemented: LED dim level (the valid range of the value is not known yet) a
 cache switch (it is one of the feature bits in options page `31`, whose bit meanings beyond
 dual redundancy and spin-down have not been mapped; on the maintainer's unit bit 2 is also set).
 
+### 11.15 Blink confirmed; LED dim level; SSD cache (2026-11-15)
+
+- **Blink works on the 8D with the corrected framing** (driver v0.27.1): the maintainer saw the
+  lights blink, the command returned SRB response 1, and the unit carried on. That confirms
+  11.14, and with it the framing of standby and restart, which are still untried. The plain
+  form blinks for a long time; Dashboard's app has separate "turn on" and "turn off" actions
+  and an `IdentifyInterval` value, which is the 4-byte argument of the other `identifyESA`
+  variant. Not implemented.
+- **LED dim level.** Dashboard's settings view (`GeneralSettingsView.xaml`) defines the "Dim
+  Lights" slider as `Minimum="0" Maximum="9" TickInterval="1"`, and the service passes the
+  value straight to operation `18` (set, 2 bytes out) and reads it with `21` (2 bytes back).
+  Driver v0.28.0 implements both; the app's Settings sheet has the slider. **Not yet tried on
+  hardware.**
+- **SSD (hot data) cache.** The service has no command for it. Dashboard's app only has status
+  strings for it (accelerator active or not active), so it appears to be automatic when the
+  mSATA bay holds a good drive, not a switch. The app shows the SSD bay's state on Summary and
+  does not claim more than that.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

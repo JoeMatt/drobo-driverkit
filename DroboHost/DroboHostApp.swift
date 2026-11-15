@@ -441,6 +441,22 @@ final class DashboardModel: ObservableObject {
         return false
     }
 
+    /// Asks the Drobo for its LED dim level; the answer shows up in the next poll.
+    func readDimLevel() {
+        guard snapshot.dimmingAvailable, snapshot.healthAvailable else { return }
+        _ = DroboMonitor.send(.getDim)
+    }
+
+    /// Sets the LED dim level, 0 (brightest) to 9, then reads it back.
+    func setDimLevel(_ level: Int) {
+        guard snapshot.dimmingAvailable else {
+            message = "LED brightness needs driver 0.28.0 or later. Press Activate on the Advanced tab first."
+            return
+        }
+        command(.setDim, argument: UInt32(max(0, min(level, 9))), label: "LED brightness")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.readDimLevel() }
+    }
+
     /// Ejects everything, then asks the Drobo to restart.
     func restart() {
         guard systemOperationAllowed else { return }

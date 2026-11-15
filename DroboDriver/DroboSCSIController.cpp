@@ -227,6 +227,9 @@ struct DroboSCSIController_IVars
     uint32_t                   commandLength;
     uint8_t                    commandData[64];
     uint8_t                    commandSequence;
+    uint8_t                    commandOperation;    // system operation code of the command in flight
+    bool                       dimKnown;
+    uint32_t                   dimLevel;
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
 
@@ -532,7 +535,11 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     status->setObject("Asleep", iv->asleep ? kOSBooleanTrue : kOSBooleanFalse);
     // 2 = system operations use Drobo Dashboard's framing (v0.27.0, protocol notes 11.14). The
     // app refuses to send blink, standby or restart to a driver that does not report this.
-    DictSetNumber(status, "CommandFormat", 2);
+    // 3 adds the LED dim level commands (v0.28.0).
+    DictSetNumber(status, "CommandFormat", 3);
+    if (iv->dimKnown) {
+        DictSetNumber(status, "DimLevel", iv->dimLevel);
+    }
     status->setObject("ExtendedSlots", iv->extendedEnabled ? kOSBooleanTrue : kOSBooleanFalse);
     status->setObject("ExtendedSlotsFailed", (iv->extendedFailedMask & (1u << kHealthFirstOptional)) ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "ExtendedFailedMask", iv->extendedFailedMask >> kHealthFirstOptional);
@@ -1158,6 +1165,8 @@ enum : uint32_t {
     kDroboAppCommandSetOptions  = 5,    // argument = flags (low 16 bits) | spin-down minutes << 16
     kDroboAppCommandSetExtended = 6,    // argument = 1 to poll the optional per-drive page, 0 to stop
     kDroboAppCommandRestart     = 7,
+    kDroboAppCommandSetDim      = 8,    // argument = LED dim level, 0 (brightest) to 9
+    kDroboAppCommandGetDim      = 9,    // reads the LED dim level into DroboStatus "DimLevel"
 };
 
 kern_return_t
@@ -1221,6 +1230,8 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
             }
             case kDroboAppCommandBlink:
             case kDroboAppCommandRestart:
+            case kDroboAppCommandSetDim:
+            case kDroboAppCommandGetDim:
             case kDroboAppCommandStandby:
             case kDroboAppCommandSetOptions:
             case kDroboAppCommandRename: {
@@ -1278,6 +1289,24 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     iv->commandCDB[4] = ++iv->commandSequence;
                     iv->commandCDB[6] = 0x21;
                     iv->commandCDB[8] = 0x01;
+                    if (command == kDroboAppCommandSetDim) {
+                        // Operation 0x18: two bytes out, the level big-endian. Dashboard's own
+                        // slider runs 0 to 9 (protocol notes 11.15).
+                        const uint32_t level = argument > 9 ? 9 : argument;
+                        iv->commandCDB[3]  = 0x18;
+                        iv->commandCDB[8]  = 0x02;
+                        iv->commandLength  = 2;
+                        iv->commandData[0] = 0;
+                        iv->commandData[1] = (uint8_t) level;
+                    } else if (command == kDroboAppCommandGetDim) {
+                        // Operation 0x21: two bytes back; byte 2 flags a request that reads data.
+                        iv->commandCDB[2]  = 0x80;
+                        iv->commandCDB[3]  = 0x21;
+                        iv->commandCDB[8]  = 0x02;
+                        iv->commandLength  = 2;
+                        iv->commandDataOut = false;
+                    }
+                    iv->commandOperation = iv->commandCDB[3];
                 }
                 iv->commandPending = true;
                 HealthSend();                       // goes now if the channel is idle
@@ -2120,6 +2149,13 @@ DroboSCSIController::HealthResponse()
 
     if (iv->commandInflight) {
         // Answer to an app command (blink, standby, rename): record it and carry on polling.
+        if (iv->commandOperation == 0x21 && scsiStatus == 0 &&
+            (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort)) {
+            const uint8_t * answer = iv->requestVA + kHealthDataOffset;
+            iv->dimLevel = ((uint32_t) answer[0] << 8) | answer[1];
+            iv->dimKnown = true;
+        }
+        iv->commandOperation = 0;
         iv->commandInflight = false;
         iv->tmInflight = false;
         iv->lastCommandSRB = srbResponse;

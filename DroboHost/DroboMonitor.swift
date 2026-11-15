@@ -89,6 +89,8 @@ enum DroboCommand: UInt32 {
     case setOptions = 5
     case setExtended = 6
     case restart = 7
+    case setDim = 8
+    case getDim = 9
 }
 
 /// The driver's own timing for one size class of block request.
@@ -141,6 +143,9 @@ struct DroboSnapshot {
     /// does (driver 0.27.0 and later). Older drivers sent a malformed command that hung the 8D.
     var commandFormat = 0
     var systemOperationsSafe: Bool { commandFormat >= 2 }
+    var dimmingAvailable: Bool { commandFormat >= 3 }
+    /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
+    var dimLevel: Int?
 
     // From the optional system pages (sub-pages 0x33, 0x37, 0x36, 0x34; protocol notes 11.11).
     // nil or empty unless those pages are on and the Drobo answers them.
@@ -221,6 +226,7 @@ enum DroboMonitor {
             snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
             snapshot.flushes = UInt64(number(status["Flushes"]))
             snapshot.commandFormat = number(status["CommandFormat"])
+            snapshot.dimLevel = (status["DimLevel"] as? NSNumber)?.intValue
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
             snapshot.latency = [("4 KB", "4K"), ("64 KB", "64K"), ("256 KB", "256K"), ("512 KB", "512K")].map { label, key in
