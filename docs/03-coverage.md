@@ -4,7 +4,7 @@ What the original Drobo software did, and where this project stands. Status valu
 **verified** (seen working on a Drobo 8D), **unverified** (implemented, compiles, not yet run
 on hardware), **partial**, **no**.
 
-Last updated for driver v0.24.0.
+Last updated for driver v0.25.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -60,7 +60,7 @@ protocol reference are marked as needing that analysis.
 | Capacity alert thresholds (read) | `3A/30` | read, not shown | partial |
 | Capacity alert thresholds (change) | MODE SELECT `7A/30` | not implemented | no |
 | Rename the Drobo, set its clock | MODE SELECT `7A/05` | Rename | unverified |
-| Blink lights (identify) | vendor `EA` command `06` | removed from the app | **disabled**: on hardware the unit stopped responding and restarted, lights never blinked (protocol notes 11.8) |
+| Blink lights (identify) | vendor `EA` command `06` | removed from the app; refused by the driver since v0.25.0 | **disabled**: on hardware the unit stopped responding and restarted, lights never blinked (protocol notes 11.8) |
 | Shut down / standby | vendor `EA` command `0D` | Shut Down | unverified |
 | Restart | unknown | not implemented | no: needs Dashboard analysis |
 | Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons) |
@@ -100,7 +100,8 @@ publishes its raw bytes under `DroboHealth`.
 | Per-drive interface | Slot page `03`, last 8 bytes of the identity field | decoded; shown (Drives) |
 | Per-drive managed capacity | Slot page `03`, second u64 of the record | decoded; shown (Drives) |
 | Per-drive "short identity" and trailing u32 | Slot page `03` | settled: a repeat of the model's first 16 bytes, and zero (protocol notes 11.9) |
-| Per-drive temperature, error count, firmware revision, serial, SSD life remaining, rotational speed | Slot page 2, sub-page `35`: record layout known from Drobo Dashboard (protocol notes 11.9) | **not polled yet**; untried on the 8D |
+| Per-drive temperature, error count, firmware revision, serial | Slot page 2, sub-page `35` (protocol notes 11.9) | unverified: opt-in since v0.25.0 (Advanced → Read drive details), shown on Drives; never tried on hardware |
+| Per-drive SSD life remaining, rotational speed, disk state and type | same page | decoded into diagnostics only; encodings unknown |
 | Name, serial | Settings page `05`, `DroboStatus` | shown |
 | Firmware version, build date, platform | Firmware page `08` | version and build shown; platform decoded only |
 | Device clock | Settings page `05` (UTC u32, offset u16) | polled, not decoded |

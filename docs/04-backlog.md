@@ -53,11 +53,12 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
 13. **Per-drive and system telemetry** [driver, app, protocol, needs hardware]. Protocol notes
     11.9 has Drobo Dashboard's full sub-page map and the per-drive record of sub-page `35`
     (temperature, error count, firmware revision, serial, SSD life remaining, rotational speed).
-    Steps: (a) read the `35` page header and the layouts of `33` system info, `34` performance,
-    `36` power supply, `37` fan, `11` disk pack from the same binary; (b) add `35` to the
-    driver's polled pages, read-only MODE SENSE like the others, disabling it on any error; try
-    it only on a unit that is **not rebuilding**; (c) show it on the Drives tab. Drive serial
-    numbers must be redacted in diagnostics files. Also still unused from polled pages: the
+    Page `35` is implemented (opt-in, v0.25.0) and waits for a first try on a healthy unit.
+    Steps: (a) read the layouts of `33` system info, `34` performance,
+    `36` power supply, `37` fan, `11` disk pack from the same binary; (b) turn on Read drive
+    details on a unit that is **not rebuilding** and record what page `35` returns in protocol
+    notes section 11; (c) work out the encodings of disk state, disk type, life remaining and
+    rotational speed from that dump. Also still unused from polled pages: the
     device clock, the protocol version and the config page's LUN limits.
 14. **Events and performance history, next steps** [app]. Both tabs exist. Still open: keep
     performance history across app restarts, add latency over time (the driver publishes only

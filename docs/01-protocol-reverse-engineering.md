@@ -753,6 +753,22 @@ units and encodings of disk state, disk type, life remaining and rotational spee
 layouts of pages `33`, `34`, `36`, `37`, `38` and `11`. The Drobo does not appear to pass
 S.M.A.R.T. attributes through: the only "SMART" strings in the service are a drive vendor name.
 
+**Page `35` header**, `ESASlotInfo2::parse` @ `0x10009d8c4`: after the usual `7A 35 <len16>`,
+byte `0x08` of the page is the slot count and byte `0x09` the record size; records start at
+`0x0C`. The largest page is `0x51C` bytes (12 + 12 × 108). **[obs]**
+
+Since driver v0.25.0 the driver can poll page `35` (key `Slots2` under `DroboHealth`). It is off
+until the app turns it on (Advanced tab, "Read drive details"), the app holds it off while the
+unit is rebuilding or has no redundancy, and the driver gives it up until it restarts if the
+Drobo answers with an error or not at all. **It has not been tried on hardware.**
+
+### 11.10 First write through the driver (2026-11-15)
+
+Reported by the maintainer: with Allow writes on for a volume, a file copy to the 8D completed
+and appeared to work. No checksum comparison after eject and remount has been done yet, and the
+unit was rebuilding at the time, so the write path stays "unverified" until backlog item 3 is
+carried out.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

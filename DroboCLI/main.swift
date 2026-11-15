@@ -139,8 +139,12 @@ func deviceText(_ state: State) -> String {
 
 func drivesText(_ slots: [DroboSlot]) -> String {
     guard !slots.isEmpty else { return "No bay information." }
-    return table([["BAY", "SIZE", "STATUS", "MODEL"]] + slots.map {
-        [bayLabel($0), $0.isEmpty ? "-" : human($0.physicalBytes), $0.statusText, $0.isEmpty ? "-" : $0.model]
+    // Temperature and errors appear only when the optional drive page is on (see the app).
+    let detailed = slots.contains { $0.temperature != nil }
+    return table([["BAY", "SIZE", "STATUS"] + (detailed ? ["TEMP", "ERRORS"] : []) + ["MODEL"]] + slots.map { slot in
+        [bayLabel(slot), slot.isEmpty ? "-" : human(slot.physicalBytes), slot.statusText]
+            + (detailed ? [slot.temperature.map { "\($0) C" } ?? "-", slot.errorCount.map { "\($0)" } ?? "-"] : [])
+            + [slot.isEmpty ? "-" : slot.model]
     })
 }
 
@@ -155,7 +159,13 @@ func volumesText(_ luns: [DroboLUN]) -> String {
 // MARK: JSON output
 
 func driveJSON(_ slot: DroboSlot) -> [String: Any] {
-    ["bay": bayLabel(slot), "empty": slot.isEmpty, "bytes": slot.physicalBytes, "model": slot.model, "status": slot.statusText]
+    var drive: [String: Any] = ["bay": bayLabel(slot), "empty": slot.isEmpty, "bytes": slot.physicalBytes,
+                                "model": slot.model, "status": slot.statusText]
+    if let temperature = slot.temperature { drive["temperatureC"] = temperature }
+    if let errors = slot.errorCount { drive["errorCount"] = errors }
+    if !slot.firmwareRevision.isEmpty { drive["firmware"] = slot.firmwareRevision }
+    if !slot.serial.isEmpty { drive["serial"] = slot.serial }
+    return drive
 }
 
 func volumeJSON(_ lun: DroboLUN) -> [String: Any] {
@@ -202,6 +212,7 @@ spin-down                    minutes, 0 when off
 drives  bays                 drives installed, bays in total
 alerts                       one per line
 drive.<bay>.status|size|size-human|model          bay is 1-8 or ssd
+drive.<bay>.temperature|errors|firmware|serial    only when drive details are on in the app
 volume.<name|unit>.mounted|size|size-human|access|disk|name
 """
 
@@ -214,6 +225,10 @@ func value(for key: String, in state: State) -> String? {
         case "size": return "\(slot.physicalBytes)"
         case "size-human": return slot.isEmpty ? "-" : human(slot.physicalBytes)
         case "model": return slot.model
+        case "temperature": return slot.temperature.map { "\($0)" }
+        case "errors": return slot.errorCount.map { "\($0)" }
+        case "firmware": return slot.firmwareRevision.isEmpty ? nil : slot.firmwareRevision
+        case "serial": return slot.serial.isEmpty ? nil : slot.serial
         default: return nil
         }
     }

@@ -29,6 +29,7 @@ struct ContentView: View {
         guard Demo.scenario != nil, let name = UserDefaults.standard.string(forKey: "demoTab") else { return .summary }
         return Tab(rawValue: name.capitalized) ?? .summary
     }()
+    @AppStorage(DashboardModel.extendedKey) private var readDriveDetails = false
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
@@ -437,20 +438,29 @@ struct ContentView: View {
                     if !slot.interface.isEmpty { fact("Interface", slot.interface) }
                     if slot.managedBytes > 0 { fact("Managed by Drobo", DashboardModel.bytes(slot.managedBytes)) }
                 }
+                if slot.temperature != nil || slot.errorCount != nil || !slot.serial.isEmpty {
+                    HStack(spacing: 14) {
+                        if let temperature = slot.temperature, temperature > 0 { fact("Temp", "\(temperature) °C") }
+                        if let errors = slot.errorCount { fact("Errors", "\(errors)", tint: errors > 0 ? Theme.amber : nil) }
+                        if !slot.firmwareRevision.isEmpty { fact("Firmware", slot.firmwareRevision) }
+                        if !slot.serial.isEmpty { fact("Serial", slot.serial) }
+                    }
+                }
             }
         }
         .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: dashboard.snapshot.extendedEnabled ? 96 : 78, alignment: .topLeading)
         .background(plate.fill(Color.white.opacity(slot.isEmpty ? 0.012 : 0.04)))
         .overlay(plate.strokeBorder(Color.white.opacity(0.07),
                                     style: StrokeStyle(lineWidth: 1, dash: slot.isEmpty ? [3, 3] : [])))
         .opacity(slot.isEmpty ? 0.62 : 1)
     }
 
-    private func fact(_ label: String, _ value: String) -> some View {
+    private func fact(_ label: String, _ value: String, tint: Color? = nil) -> some View {
         HStack(spacing: 5) {
             Text(label).font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
-            Text(value).font(Theme.text(10.5, .medium)).foregroundStyle(Theme.secondary)
+            Text(value).font(Theme.text(10.5, .medium)).foregroundStyle(tint ?? Theme.secondary)
+                .lineLimit(1).textSelection(.enabled)
         }
     }
 
@@ -544,9 +554,40 @@ struct ContentView: View {
                 latency.frame(width: 360)
             }
             .fixedSize(horizontal: false, vertical: true)
+            driveDetailsCard
             commandLineCard
             diagnosticsCard
         }
+    }
+
+    /// Opt-in for the per-drive page the driver does not read by default.
+    private var driveDetailsCard: some View {
+        let snapshot = dashboard.snapshot
+        let fragile = DashboardModel.isFragile(snapshot)
+        let status = snapshot.extendedFailed
+            ? "This Drobo did not answer the request, so the driver stopped asking. It stays off until the driver restarts."
+            : fragile && readDriveDetails
+            ? "Waiting: nothing new is asked of the Drobo while it is rebuilding or has no redundancy. It turns on by itself afterwards."
+            : snapshot.extendedEnabled ? "On. Temperature, error count, firmware and serial number are on the Drives tab."
+            : readDriveDetails ? "Asked for; waiting for the driver. This needs driver 0.25.0 or later (press Activate after updating)."
+            : "Off."
+        return Bezel(title: "Drive details · experimental") {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Asks the Drobo for each drive's temperature, error count, firmware revision and serial number. It is a read-only status request that Drobo's own software also sends, but it has not been tried on every model. If the Drobo refuses it, the driver stops asking.")
+                        .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(status).font(Theme.text(11.5, .medium))
+                        .foregroundStyle(snapshot.extendedFailed ? Theme.amber : Theme.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Toggle("Read drive details", isOn: $readDriveDetails)
+                    .toggleStyle(.switch).labelsHidden().tint(Theme.emerald)
+                    .onChange(of: readDriveDetails) { _, _ in dashboard.extendedSettingChanged() }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var diagnosticsCard: some View {

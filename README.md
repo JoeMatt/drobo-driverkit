@@ -19,6 +19,7 @@ for the direct-attached Thunderbolt units.
 | Writing | **Experimental and off by default.** You enable it per volume in the app. Implemented but not yet verified on hardware: keep a copy of anything on a volume you make writable |
 | APFS volumes on the Drobo | macOS will not mount APFS from a write-protected disk; they need "Allow writes" |
 | Health, capacity, drive bays, rebuild progress | **Works**, shown in the included app |
+| Per-drive temperature, error count, firmware and serial | Experimental and off by default (Advanced → Read drive details). Not yet tried on hardware. The Drobo does not expose full S.M.A.R.T. data |
 | Rename the Drobo, safe shutdown, per-volume mount/unmount | In the app; rename and shutdown not yet verified on hardware |
 | Blink lights | **Turned off.** As sent today it makes the 8D stop responding and restart |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |

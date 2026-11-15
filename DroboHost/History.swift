@@ -138,6 +138,12 @@ final class EventLog: ObservableObject {
             }
         }
 
+        for slot in latest.slots {
+            guard let now = slot.errorCount, let before = previous.slots.first(where: { $0.id == slot.id })?.errorCount,
+                  now > before else { continue }
+            add(.warning, "\(slot.id < 8 ? "Bay \(slot.id + 1)" : "SSD bay"): drive error count rose to \(now)", slot.model)
+        }
+
         if latest.errors > previous.errors {
             add(.warning, "The driver reported \(latest.errors - previous.errors) I/O error(s)", "Total since it started: \(latest.errors).")
         }

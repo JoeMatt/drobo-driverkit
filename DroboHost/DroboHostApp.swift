@@ -277,6 +277,37 @@ final class DashboardModel: ObservableObject {
     private var rebuildStart: (date: Date, count: UInt32)?
     private var writableSeeded = false
     private var awaitingCommand: (count: UInt64, name: String)?
+    private var extendedAttempted = false
+
+    /// The app setting behind "Read drive details". The driver forgets it when it restarts.
+    static let extendedKey = "readDriveDetails"
+
+    /// True while the Drobo is rebuilding or has no redundancy: nothing new is asked of it then.
+    static func isFragile(_ snapshot: DroboSnapshot) -> Bool {
+        snapshot.isRebuilding || (snapshot.statusFlags ?? 0) & 0x40 != 0
+    }
+
+    /// Keeps the driver's optional per-drive page in step with the app setting: on when asked
+    /// for and the Drobo is healthy, off again the moment it is not. One attempt per connection,
+    /// so an older driver that refuses the command is not asked repeatedly.
+    private func syncExtended(_ latest: DroboSnapshot) {
+        guard latest.ready, latest.statusFlags != nil else { extendedAttempted = false; return }
+        let wanted = UserDefaults.standard.bool(forKey: Self.extendedKey) && !Self.isFragile(latest)
+        if latest.extendedEnabled, !wanted {
+            _ = DroboMonitor.send(.setExtended, argument: 0)
+        } else if wanted, !latest.extendedEnabled, !latest.extendedFailed, !extendedAttempted {
+            extendedAttempted = true
+            if let failure = DroboMonitor.send(.setExtended, argument: 1) {
+                message = "Drive details: " + failure
+            }
+        }
+    }
+
+    /// Called when the setting changes, so the next poll tries again.
+    func extendedSettingChanged() {
+        extendedAttempted = false
+        refresh()
+    }
 
     init() {
         events.onChanges = { Alerts.deliver($0) }
@@ -373,6 +404,7 @@ final class DashboardModel: ObservableObject {
         volumes = DroboMonitor.volumes()
         luns = DroboMonitor.luns(latest, volumes: volumes)
         events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
+        syncExtended(latest)
         if latest.driverPresent {
             performance.record(date: now, readRate: readRate, writeRate: writeRate, blocksLeft: latest.relayoutCount)
         }

@@ -57,10 +57,16 @@ enum Demo {
             guard bay < models.count else { return DroboSlot(id: bay, physicalBytes: 0, statusCode: 0x80, model: "") }
             let code: UInt8 = rebuilding && bay == 2 ? 4 : 3
             let size = (bay < 4 ? 8 : 4) * tb
-            return DroboSlot(id: bay, physicalBytes: size, statusCode: code, model: models[bay],
-                             managedBytes: size - 12_000_000_000, interface: "SATA")
+            var slot = DroboSlot(id: bay, physicalBytes: size, statusCode: code, model: models[bay],
+                                 managedBytes: size - 12_000_000_000, interface: "SATA")
+            slot.temperature = 33 + (bay * 7) % 9
+            slot.errorCount = rebuilding && bay == 2 ? 14 : 0
+            slot.firmwareRevision = bay < 2 ? "81.00A81" : (bay < 4 ? "SC61" : "82.00A82")
+            slot.serial = "DEMO\(1000 + bay * 137)"
+            return slot
         } + [DroboSlot(id: 8, physicalBytes: 0, statusCode: 0x80, model: "")]
         snapshot.unprotectedBytes = 0
+        snapshot.extendedEnabled = true
         data.snapshot = snapshot
         data.luns = [
             DroboLUN(id: 0, bytes: 16 * tb, volumeNames: ["Archive"], bsdName: nil, writable: false),

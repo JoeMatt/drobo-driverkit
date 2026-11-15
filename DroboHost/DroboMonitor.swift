@@ -19,6 +19,19 @@ struct DroboSlot: Identifiable {
     /// Drive interface from the slot page's identity field, e.g. "SATA".
     var interface = ""
 
+    // From the optional second slot page (sub-page 0x35, protocol notes 11.9). All nil or empty
+    // unless the app has turned that page on and the Drobo answers it.
+    /// Degrees Celsius (Drobo Dashboard prints this field followed by "C").
+    var temperature: Int?
+    var errorCount: Int?
+    var firmwareRevision = ""
+    var serial = ""
+    /// Raw values whose encodings are not known yet; kept for diagnostics, not shown.
+    var diskState: UInt32?
+    var diskType: Int?
+    var lifeRemaining: Int?
+    var rotationalSpeed: Int?
+
     var isEmpty: Bool { statusCode == 0x80 }
 
     /// What the bay light is doing, as documented by drobo-utils.
@@ -65,6 +78,7 @@ enum DroboCommand: UInt32 {
     case standby = 3
     case rename = 4
     case setOptions = 5
+    case setExtended = 6
 }
 
 /// The driver's own timing for one size class of block request.
@@ -109,6 +123,9 @@ struct DroboSnapshot {
     var yellowThreshold: Int?
     var redThreshold: Int?
     var latency: [DroboLatency] = []
+    /// The driver is polling the optional per-drive page / gave it up after the Drobo refused it.
+    var extendedEnabled = false
+    var extendedFailed = false
     var statusFlags: UInt32?
     var relayoutCount: UInt32 = 0
     var freeBytes: UInt64?
@@ -172,6 +189,8 @@ enum DroboMonitor {
             snapshot.lastCommandResult = number(status["LastCommandSRB"])
             snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
             snapshot.flushes = UInt64(number(status["Flushes"]))
+            snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
+            snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
             snapshot.latency = [("4 KB", "4K"), ("64 KB", "64K"), ("256 KB", "256K"), ("512 KB", "512K")].map { label, key in
                 DroboLatency(id: label,
                              count: UInt64(number(status["Latency\(key)Count"])),
@@ -245,7 +264,37 @@ enum DroboMonitor {
             }
             snapshot.slots = slots
         }
+        if let page = payload(health["Slots2"]) { applySlots2(page, to: &snapshot) }
         return snapshot
+    }
+
+    /// Fills in per-drive details from the optional second slot page (sub-page 0x35), given the
+    /// page without its 4-byte header.
+    // After the 4-byte page header: 4 bytes, slot count, record size, 2 bytes, then the
+    // records (ESASlotInfo2::parse). Each is 108 bytes (ESASlotInfoStruct2::parse):
+    // slot id, status, error count u16, disk state u32, disk type, temperature,
+    // life remaining, rotational speed, model[44], firmware[12], serial[24], two u64.
+    static func applySlots2(_ page: [UInt8], to snapshot: inout DroboSnapshot) {
+        guard page.count >= 8 else { return }
+        let count = Int(page[4])
+        let stride = Int(page[5])
+        var offset = 8
+        var seen = 0
+        while stride >= 108, seen < count, offset + 108 <= page.count {
+            let slotID = Int(page[offset])
+            if let index = snapshot.slots.firstIndex(where: { $0.id == slotID }), !snapshot.slots[index].isEmpty {
+                snapshot.slots[index].errorCount = Int(be16(page, offset + 2))
+                snapshot.slots[index].diskState = be32(page, offset + 4)
+                snapshot.slots[index].diskType = Int(page[offset + 8])
+                snapshot.slots[index].temperature = Int(page[offset + 9])
+                snapshot.slots[index].lifeRemaining = Int(page[offset + 10])
+                snapshot.slots[index].rotationalSpeed = Int(page[offset + 11])
+                snapshot.slots[index].firmwareRevision = string(page, offset + 0x38, 12)
+                snapshot.slots[index].serial = string(page, offset + 0x44, 24)
+            }
+            offset += stride
+            seen += 1
+        }
     }
 
     /// Mounted volumes that live on one of the Drobo's logical units.
@@ -477,7 +526,8 @@ enum DroboMonitor {
             return report
         }
         let current = snapshot()
-        let secrets = [current.serial, current.name].filter { $0.count >= 3 }
+        // Drive serial numbers (from the optional slot page) are removed as well.
+        let secrets = ([current.serial, current.name] + current.slots.map(\.serial)).filter { $0.count >= 3 }
         var driver: [String: Any] = [:]
         for key in ["DroboStatus", "DroboHealth", "IOUserClass", "CFBundleIdentifier", "IOPCIMatch"] {
             if let value = properties[key] { driver[key] = jsonReady(value, redacting: secrets) }
@@ -490,7 +540,12 @@ enum DroboMonitor {
             "statusFlags": current.statusFlags.map { String(format: "0x%08X", $0) } ?? "none",
             "statusLines": current.statusLines,
             "relayoutCount": current.relayoutCount,
-            "slots": current.slots.map { ["bay": $0.id, "status": $0.statusText, "statusCode": Int($0.statusCode), "model": $0.model] },
+            "slots": current.slots.map {
+                ["bay": $0.id, "status": $0.statusText, "statusCode": Int($0.statusCode), "model": $0.model,
+                 "temperature": $0.temperature ?? -1, "errorCount": $0.errorCount ?? -1, "firmwareRevision": $0.firmwareRevision,
+                 "diskState": Int($0.diskState ?? 0), "diskType": $0.diskType ?? -1,
+                 "lifeRemaining": $0.lifeRemaining ?? -1, "rotationalSpeed": $0.rotationalSpeed ?? -1] as [String: Any]
+            },
             "lunBlocks": current.lunBlocks,
         ] as [String: Any]
         return report
