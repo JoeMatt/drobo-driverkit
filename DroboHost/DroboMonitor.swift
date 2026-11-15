@@ -137,6 +137,10 @@ struct DroboSnapshot {
     /// refused it.
     var extendedEnabled = false
     var extendedFailed = false
+    /// 2 when the running driver frames blink, standby and restart the way Drobo's own software
+    /// does (driver 0.27.0 and later). Older drivers sent a malformed command that hung the 8D.
+    var commandFormat = 0
+    var systemOperationsSafe: Bool { commandFormat >= 2 }
 
     // From the optional system pages (sub-pages 0x33, 0x37, 0x36, 0x34; protocol notes 11.11).
     // nil or empty unless those pages are on and the Drobo answers them.
@@ -216,6 +220,7 @@ enum DroboMonitor {
             snapshot.lastCommandResult = number(status["LastCommandSRB"])
             snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
             snapshot.flushes = UInt64(number(status["Flushes"]))
+            snapshot.commandFormat = number(status["CommandFormat"])
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
             snapshot.latency = [("4 KB", "4K"), ("64 KB", "64K"), ("256 KB", "256K"), ("512 KB", "512K")].map { label, key in

@@ -530,6 +530,9 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     DictSetNumber(status, "Wakes", iv->statWakes);
     status->setObject("FlushForwarding", iv->sysAvailable ? kOSBooleanTrue : kOSBooleanFalse);
     status->setObject("Asleep", iv->asleep ? kOSBooleanTrue : kOSBooleanFalse);
+    // 2 = system operations use Drobo Dashboard's framing (v0.27.0, protocol notes 11.14). The
+    // app refuses to send blink, standby or restart to a driver that does not report this.
+    DictSetNumber(status, "CommandFormat", 2);
     status->setObject("ExtendedSlots", iv->extendedEnabled ? kOSBooleanTrue : kOSBooleanFalse);
     status->setObject("ExtendedSlotsFailed", (iv->extendedFailedMask & (1u << kHealthFirstOptional)) ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "ExtendedFailedMask", iv->extendedFailedMask >> kHealthFirstOptional);

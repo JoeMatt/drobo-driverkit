@@ -429,10 +429,21 @@ final class DashboardModel: ObservableObject {
 
     /// Blink the lights so the unit can be told apart. Needs driver 0.27.0 or later: earlier
     /// drivers framed this command wrongly and it made the 8D hang (protocol notes 11.8, 11.14).
-    func blink() { command(.blink, label: "Blink lights") }
+    func blink() {
+        guard systemOperationAllowed else { return }
+        command(.blink, label: "Blink lights")
+    }
+
+    /// Blink, restart and standby are only sent to a driver that frames them correctly.
+    private var systemOperationAllowed: Bool {
+        if snapshot.systemOperationsSafe { return true }
+        message = "The running driver is older than 0.27.0 and would send this command in a form that hung the Drobo. Press Activate on the Advanced tab to load the updated driver first."
+        return false
+    }
 
     /// Ejects everything, then asks the Drobo to restart.
     func restart() {
+        guard systemOperationAllowed else { return }
         busy = true
         ejectAll { [weak self] in
             self?.command(.restart, label: "Restart")
@@ -484,6 +495,7 @@ final class DashboardModel: ObservableObject {
 
     /// Ejects everything, then asks the Drobo to flush its caches and power down.
     func shutDown() {
+        guard systemOperationAllowed else { return }
         busy = true
         ejectAll { [weak self] in
             self?.command(.standby, label: "Shut down")
