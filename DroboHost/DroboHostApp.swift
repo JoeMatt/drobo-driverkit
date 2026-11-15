@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import SwiftUI
 import SystemExtensions
 import os.log
@@ -10,6 +11,7 @@ import os.log
 /// notifications when that state changes.
 @main
 struct DroboHostApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var dashboard = DashboardModel()
     @StateObject private var updates = UpdateChecker()
     @AppStorage("showMenuBarItem") private var showMenuBarItem = true
@@ -43,6 +45,44 @@ struct DroboHostApp: App {
                 .environmentObject(dashboard)
                 .environmentObject(updates)
         }
+    }
+}
+
+/// Decides what Quit means. The first time, it asks whether to keep the Drobo in the menu bar
+/// (the app keeps monitoring in the background) or to quit completely, and remembers the answer;
+/// Settings can change it. "Quit Completely" in the menu bar drop-down always quits.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let behaviorKey = "quitBehavior"      // "" = ask, "menubar", "quit"
+    static var quitCompletely = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if Self.quitCompletely { return .terminateNow }
+        // Log out, restart and shut down must never be held up by a question.
+        if NSAppleEventManager.shared().currentAppleEvent?
+            .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil { return .terminateNow }
+
+        let defaults = UserDefaults.standard
+        var behavior = defaults.string(forKey: Self.behaviorKey) ?? ""
+        if behavior.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Keep Drobo in the menu bar?"
+            alert.informativeText = "The app can stay in the menu bar to keep watching the Drobo and notify you when its status changes. You can change this later in Settings."
+            alert.addButton(withTitle: "Keep in Menu Bar")
+            alert.addButton(withTitle: "Quit Completely")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: behavior = "menubar"
+            case .alertSecondButtonReturn: behavior = "quit"
+            default: return .terminateCancel
+            }
+            defaults.set(behavior, forKey: Self.behaviorKey)
+        }
+        guard behavior == "menubar" else { return .terminateNow }
+        defaults.set(true, forKey: "showMenuBarItem")
+        for window in sender.windows where window.isVisible && window.styleMask.contains(.titled) {
+            window.close()
+        }
+        return .terminateCancel
     }
 }
 
@@ -114,7 +154,10 @@ struct MenuBarContent: View {
         SettingsLink { Text("Settings…") }
         Button("About Drobo DriverKit") { About.show() }
         Divider()
-        Button("Quit") { NSApp.terminate(nil) }
+        Button("Quit Completely") {
+            AppDelegate.quitCompletely = true
+            NSApp.terminate(nil)
+        }
     }
 }
 
@@ -125,6 +168,7 @@ struct PreferencesView: View {
     @AppStorage("showMenuBarItem") private var showMenuBarItem = true
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @AppStorage("updateChannel") private var updateChannel = UpdateChannel.release.rawValue
+    @AppStorage(AppDelegate.behaviorKey) private var quitBehavior = ""
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError = ""
 
@@ -133,6 +177,11 @@ struct PreferencesView: View {
             Toggle("Show Drobo in the menu bar", isOn: $showMenuBarItem)
             Text("With this on, the app keeps running in the background after its window is closed.")
                 .font(.caption).foregroundStyle(.secondary)
+            Picker("When I quit the app", selection: $quitBehavior) {
+                Text("Ask me").tag("")
+                Text("Keep it in the menu bar").tag("menubar")
+                Text("Quit completely").tag("quit")
+            }
             Toggle("Open at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in
                     loginError = LoginItem.set(enabled) ?? ""

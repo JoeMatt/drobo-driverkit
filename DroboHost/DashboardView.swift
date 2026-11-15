@@ -15,32 +15,25 @@ struct ContentView: View {
     @State private var editDual = false
     @State private var editSpin = 0
 
+    /// Tallest the dashboard may be on the current screen. The window has a hidden title bar,
+    /// whose height is still added above the content, so leave room for it.
+    private var maxHeight: CGFloat {
+        // Demo mode can pretend the screen is small: `-demo healthy -demoMaxHeight 700`.
+        let forced = UserDefaults.standard.double(forKey: "demoMaxHeight")
+        if Demo.scenario != nil, forced > 0 { return forced }
+        let screen = NSApp.keyWindow?.screen ?? NSScreen.main
+        return max(420, (screen?.visibleFrame.height ?? 800) - 40)
+    }
+
     var body: some View {
-        let snapshot = dashboard.snapshot
-        VStack(alignment: .leading, spacing: 10) {
-            header.rise(0)
-            if snapshot.ready {
-                HStack(alignment: .top, spacing: 12) {
-                    capacity
-                    protection.frame(width: 300)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .rise(1)
-                HStack(alignment: .top, spacing: 12) {
-                    bays
-                    volumes.frame(width: 350)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .rise(2)
-                tools.rise(3)
-            } else {
-                offline.rise(1)
-            }
-            driver.rise(4)
-            footer.rise(5)
+        // The window is exactly as tall as the dashboard when the screen allows it, and scrolls
+        // when it does not (small displays, or a long list of alerts and volumes).
+        ViewThatFits(in: .vertical) {
+            panels
+            ScrollView(.vertical) { panels }
         }
-        .padding(.horizontal, 22).padding(.top, 30).padding(.bottom, 14)
-        .frame(width: 940, alignment: .leading)
+        .frame(width: 940)
+        .frame(maxHeight: maxHeight)
         .fixedSize(horizontal: false, vertical: true)
         .background(Backdrop().ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -63,6 +56,35 @@ struct ContentView: View {
         } message: {
             Text(writableWarning)
         }
+    }
+
+    private var panels: some View {
+        let snapshot = dashboard.snapshot
+        return VStack(alignment: .leading, spacing: 10) {
+            header.rise(0)
+            if snapshot.ready {
+                HStack(alignment: .top, spacing: 12) {
+                    capacity
+                    protection.frame(width: 300)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .rise(1)
+                HStack(alignment: .top, spacing: 12) {
+                    bays
+                    volumes.frame(width: 350)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .rise(2)
+                tools.rise(3)
+            } else {
+                offline.rise(1)
+            }
+            driver.rise(4)
+            footer.rise(5)
+        }
+        .padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 14)
+        .frame(width: 940, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var writableWarning: String {
