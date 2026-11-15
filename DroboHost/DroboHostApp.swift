@@ -437,7 +437,7 @@ final class DashboardModel: ObservableObject {
     /// Blink, restart and standby are only sent to a driver that frames them correctly.
     private var systemOperationAllowed: Bool {
         if snapshot.systemOperationsSafe { return true }
-        message = "The running driver is older than 0.27.0 and would send this command in a form that hung the Drobo. Press Activate on the Advanced tab to load the updated driver first."
+        message = "The running driver is older than 0.27.1 and would send this command in a form that hung the Drobo. Press Activate on the Advanced tab to load the updated driver first."
         return false
     }
 
