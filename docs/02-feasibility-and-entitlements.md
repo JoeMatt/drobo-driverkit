@@ -160,6 +160,15 @@ decide between Path B and asking Apple; do not work around it by lowering securi
   "interoperability driver for orphaned hardware whose vendor is defunct, personal use".
 - If granted: loads on any Mac with SIP on, no device registration, no yearly expiry.
 
+**Checked 2026-11-15.** A Developer ID (`MAC_APP_DIRECT`) provisioning profile created for the
+driver's App ID, with every DriverKit capability ticked in the portal, came back with **no
+DriverKit entitlements at all**: only the application identifier. Not `driverkit`, not the SCSI
+controller family, not PCI transport, not user-client access. So the portal capabilities only
+feed development profiles, and a Developer ID build has nothing to back the entitlements the
+driver needs until Apple grants the distribution versions. Notarization itself would likely
+succeed (the notary service checks signing and malware, not entitlement grants), but macOS
+would refuse to load the extension.
+
 ### Path C: no entitlements at all
 
 Loading a dext without the entitlements means disabling SIP, and in practice AMFI boot-args
