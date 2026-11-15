@@ -20,7 +20,15 @@ struct DroboHostApp: App {
 
     var body: some Scene {
         Window("Drobo", id: "main") {
-            ContentView()
+            // Demo mode can show the menu bar panel in the window for review:
+            // `-demo healthy -demoMenuPanel YES` (add `-demoOption YES` for the Option view).
+            Group {
+                if Demo.scenario != nil, UserDefaults.standard.bool(forKey: "demoMenuPanel") {
+                    MenuBarPanel()
+                } else {
+                    ContentView()
+                }
+            }
                 .environmentObject(dashboard)
                 .environmentObject(updates)
                 .environmentObject(commandLine)
@@ -40,13 +48,14 @@ struct DroboHostApp: App {
         }
 
         MenuBarExtra(isInserted: $showMenuBarItem) {
-            MenuBarContent()
+            MenuBarPanel()
                 .environmentObject(dashboard)
                 .environmentObject(updates)
                 .environmentObject(commandLine)
         } label: {
             Image(systemName: dashboard.menuBarSymbol)
         }
+        .menuBarExtraStyle(.window)
 
         Settings {
             PreferencesView()
@@ -126,50 +135,6 @@ enum About {
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 \(author)",
         ])
         NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-/// The drop-down under the menu bar icon.
-struct MenuBarContent: View {
-    @EnvironmentObject private var dashboard: DashboardModel
-    @EnvironmentObject private var updates: UpdateChecker
-    @EnvironmentObject private var commandLine: CommandLineTool
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        let snapshot = dashboard.snapshot
-        Text(dashboard.summaryLine)
-        if snapshot.ready, let used = snapshot.usedBytes, let free = snapshot.freeBytes {
-            Text("\(DashboardModel.bytes(used)) used · \(DashboardModel.bytes(free)) free")
-        }
-        if snapshot.isRebuilding, snapshot.relayoutCount > 0 {
-            Text("Rebuilding: \(snapshot.relayoutCount) blocks left")
-        }
-        Divider()
-        ForEach(dashboard.luns) { lun in
-            Button((lun.isMounted ? "Unmount " : "Mount ") + (lun.volumeNames.first ?? DashboardModel.bytes(lun.bytes))) {
-                dashboard.setMounted(!lun.isMounted, lun: lun)
-            }
-            .disabled(lun.bsdName == nil || dashboard.busy)
-        }
-        Button("Eject All") { dashboard.ejectAll() }.disabled(dashboard.volumes.isEmpty || dashboard.busy)
-        Divider()
-        if let url = updates.updateURL {
-            Button("Update Available…") { NSWorkspace.shared.open(url) }
-        }
-        Button("Open Drobo Dashboard") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        SettingsLink { Text("Settings…") }
-        Button(commandLine.actionTitle) { commandLine.performAction() }
-            .disabled(!commandLine.canAct)
-        Button("About Drobo DriverKit") { About.show() }
-        Divider()
-        Button("Quit Completely") {
-            AppDelegate.quitCompletely = true
-            NSApp.terminate(nil)
-        }
     }
 }
 

@@ -138,10 +138,12 @@ struct ContentView: View {
                     .foregroundStyle(Theme.primary)
                     .lineLimit(1)
                 if snapshot.ready {
-                    Text("SERIAL \(snapshot.serial)" + (snapshot.firmware.isEmpty ? "" : "   FIRMWARE \(snapshot.firmware)"))
-                        .font(Theme.mono(10.5))
-                        .foregroundStyle(Theme.tertiary)
-                        .textSelection(.enabled)
+                    HStack(spacing: 14) {
+                        Text("SERIAL \(snapshot.serial)").copyOnClick(snapshot.serial)
+                        if !snapshot.firmware.isEmpty { Text("FIRMWARE \(snapshot.firmware)").copyOnClick(snapshot.firmware) }
+                    }
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.tertiary)
                 }
             }
             Spacer()
@@ -309,7 +311,7 @@ struct ContentView: View {
             Text(label).font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
             Spacer()
             Text(value).font(Theme.text(12.5, .medium)).foregroundStyle(Theme.primary)
-                .lineLimit(1).textSelection(.enabled)
+                .lineLimit(1).copyOnClick(value)
         }
     }
 
@@ -432,7 +434,7 @@ struct ContentView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(DashboardModel.bytes(slot.physicalBytes)).font(Theme.display(19, .medium)).foregroundStyle(Theme.primary)
                     Text(slot.model).font(Theme.text(12)).foregroundStyle(Theme.secondary)
-                        .lineLimit(1).textSelection(.enabled)
+                        .lineLimit(1).copyOnClick(slot.model)
                 }
                 HStack(spacing: 14) {
                     if !slot.interface.isEmpty { fact("Interface", slot.interface) }
@@ -460,7 +462,7 @@ struct ContentView: View {
         HStack(spacing: 5) {
             Text(label).font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
             Text(value).font(Theme.text(10.5, .medium)).foregroundStyle(tint ?? Theme.secondary)
-                .lineLimit(1).textSelection(.enabled)
+                .lineLimit(1).copyOnClick(value)
         }
     }
 
