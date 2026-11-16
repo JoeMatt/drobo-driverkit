@@ -20,6 +20,7 @@ commands
   all                    device, drives and volumes
   get <key>              one bare value, for scripts and status lines
   keys                   list the keys `get` accepts
+  history                each bay over the last 14 days: flagged, recovered, restarts, and what the pattern suggests
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
 
@@ -31,6 +32,55 @@ options
 
 exit status: 0 healthy, 1 warning or rebuilding, 2 needs attention, 3 not connected
 """
+
+// MARK: Drive history
+
+func historyJSON(_ report: BayReport) -> [String: Any] {
+    let stamp = ISO8601DateFormatter()
+    var bays: [[String: Any]] = []
+    for bay in report.bays {
+        var episodes: [[String: Any]] = []
+        for episode in bay.episodes {
+            var entry: [String: Any] = ["start": stamp.string(from: episode.start), "clearedByRestart": episode.clearedByRestart]
+            if let end = episode.end { entry["end"] = stamp.string(from: end) }
+            episodes.append(entry)
+        }
+        var entry: [String: Any] = ["bay": bay.bay < 8 ? "\(bay.bay + 1)" : "ssd", "model": bay.model]
+        entry["verdict"] = bay.verdict.rawValue
+        entry["summary"] = bay.summary
+        entry["timesFlagged"] = bay.episodes.count
+        entry["errorCountRise"] = bay.errorRise
+        entry["episodes"] = episodes
+        bays.append(entry)
+    }
+    var result: [String: Any] = ["days": Int(report.window / 86_400), "bays": bays]
+    result["restarts"] = report.restarts.map { stamp.string(from: $0) }
+    result["finding"] = report.headline
+    result["advice"] = report.advice
+    result["enclosureSuspected"] = report.enclosureSuspected
+    return result
+}
+
+func historyText(_ report: BayReport) -> String {
+    guard !report.bays.isEmpty else {
+        return "No drive history yet. It is recorded while the DroboDriverKit app or its menu bar item is running."
+    }
+    var lines: [String] = []
+    if !report.headline.isEmpty {
+        lines.append(report.headline + ".")
+        lines.append(report.advice)
+        lines.append("")
+    }
+    for bay in report.bays {
+        let name = bay.name.padding(toLength: 8, withPad: " ", startingAt: 0)
+        let verdict = bay.verdict.label.padding(toLength: 15, withPad: " ", startingAt: 0)
+        lines.append(name + verdict + bay.summary)
+    }
+    let days = Int(report.window / 86_400)
+    lines.append("")
+    lines.append("Last \(days) days, \(report.restarts.count) Drobo restart(s) seen. Covers only the time the app was running.")
+    return lines.joined(separator: "\n")
+}
 
 // MARK: State
 
@@ -464,6 +514,13 @@ func run() -> Int32 {
     case "metrics":
         print(metricsText(state))
         return 0
+    case "history":
+        // Recorded by the app (or its menu bar item) while it runs; this only reads the file.
+        let file: BayHistoryFile
+        if let demo { file = .demo(rebuilding: demo == "rebuilding") } else { file = BayHistory.load() }
+        let report = BayHistory.analyze(file)
+        if json { printJSON(historyJSON(report)) } else { print(historyText(report)) }
+        return report.headline.isEmpty ? 0 : 1
     case "diagnostics":
         // The command usually runs through a link in /usr/local/bin; resolve it to find the app.
         let app = Bundle.main.executableURL?.resolvingSymlinksInPath()

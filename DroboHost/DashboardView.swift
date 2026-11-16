@@ -426,6 +426,16 @@ struct ContentView: View {
     // MARK: Drives
 
     private var drivesTab: some View {
+        // The history moves above the bays when it has something to say.
+        let finding = !BayHistory.analyze(dashboard.bays.file).headline.isEmpty
+        return VStack(spacing: 14) {
+            if finding { BayHistoryCard(history: dashboard.bays) }
+            drivesCard
+            if !finding { BayHistoryCard(history: dashboard.bays) }
+        }
+    }
+
+    private var drivesCard: some View {
         Bezel(title: "Drives") {
             Button("Blink Lights") { dashboard.blink() }
                 .buttonStyle(PillButtonStyle(icon: "light.max", compact: true))

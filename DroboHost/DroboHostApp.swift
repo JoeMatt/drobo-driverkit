@@ -238,6 +238,7 @@ final class DashboardModel: ObservableObject {
 
     /// History for the Events and Performance tabs. Demo mode never touches the saved log.
     let events = EventLog(persist: Demo.scenario == nil)
+    let bays = BayHistory(persist: Demo.scenario == nil)
     let performance = PerformanceHistory()
 
     private var timer: Timer?
@@ -279,6 +280,9 @@ final class DashboardModel: ObservableObject {
 
     init() {
         events.onChanges = { Alerts.deliver($0) }
+        bays.onHeadline = { [weak self] headline, advice in self?.events.add(.warning, headline, advice)
+            Alerts.deliver([DroboEvent(date: Date(), level: .warning, title: headline, detail: advice)])
+        }
         start()
     }
 
@@ -321,6 +325,7 @@ final class DashboardModel: ObservableObject {
                 pendingWritable = Set(luns.filter(\.writable).map(\.id))
                 writableSeeded = true
                 events.seedDemo(rebuilding: scenario == "rebuilding")
+                bays.seed(.demo(rebuilding: scenario == "rebuilding"))
                 performance.seedDemo(rebuilding: scenario == "rebuilding")
             }
             return
@@ -372,6 +377,7 @@ final class DashboardModel: ObservableObject {
         volumes = DroboMonitor.volumes()
         luns = DroboMonitor.luns(latest, volumes: volumes)
         events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
+        bays.record(latest, now: now)
         syncExtended(latest)
         // Keep icons this app set earlier in step with how full each volume is.
         let writableVolumes = volumes.filter { volume in luns.contains { $0.id == volume.lun && $0.writable } }.map(\.id)

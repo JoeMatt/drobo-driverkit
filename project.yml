@@ -53,6 +53,7 @@ targets:
       - DroboCLI
       - DroboHost/DroboMonitor.swift
       - DroboHost/Demo.swift
+      - DroboHost/BayHistory.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.cli
