@@ -949,7 +949,7 @@ was observed.
   starting with `0x04`, ends the log. At most 8 chunks (256 KiB) are kept.
 - Dashboard's abort request after a failure (`EA 10 00 22 <sequence> 00 40 00 00 00`) is not
   sent.
-- No answer within 10 s: the read is given up, status polling pauses for 30 s (so a late answer
+- No answer within 10 s: the read is given up, status polling pauses for 2 minutes (so a late answer
   cannot be taken for a status page) and then carries on. Block I/O is not involved.
 - The app copies the text out through user-client selector 1, 4 KiB per call. `DroboStatus`
   gains `EventLogState` (0 never, 1 reading, 2 read, 3 failed, 4 no buffer), `EventLogLength`,

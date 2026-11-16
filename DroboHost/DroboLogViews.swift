@@ -61,7 +61,7 @@ struct DroboLogCard: View {
             Button("Read Log") { model.readDroboLog() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This sends the request Drobo Dashboard used. It only reads, but it is a command this driver has sent to few Drobos. If the Drobo does not answer, status updates pause for 30 seconds and the volumes are not affected.")
+            Text("This sends the request Drobo Dashboard used. It only reads, but it is a command this driver has sent to few Drobos. If the Drobo does not answer, status updates pause for two minutes and the volumes are not affected.")
         }
     }
 

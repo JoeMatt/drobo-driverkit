@@ -83,6 +83,7 @@ static const uint32_t kLogChunk        = 0x8000;    // what Drobo Dashboard asks
 static const uint32_t kLogMaxChunks    = 8;
 static const uint32_t kLogMax          = kLogChunk * kLogMaxChunks;
 static const uint32_t kLogCopyMax      = 4096;      // bytes handed to the app per call
+static const uint32_t kLogHoldMS       = 120000;    // pause after a log read goes unanswered: a 32 KiB answer can be slow
 static const uint32_t kHealthHoldMS       = 30000;  // pause after an optional page times out
 static const uint32_t kSysSlot         = 33;        // request slot for system-control requests
 static const uint32_t kMaxFlushWaiters = 32;
@@ -2200,6 +2201,14 @@ DroboSCSIController::HealthSend()
     if (!isCommand) {
         SkipOptionalHealthPage(iv);
     }
+    if (isCommand && iv->commandOperation == 0x22 && (iv->dead || !iv->healthAvailable || iv->logVA == nullptr)) {
+        // A log read that can no longer be sent: drop it, so it does not stay "reading" forever.
+        iv->commandPending = false;
+        iv->commandOperation = 0;
+        iv->logState = 3;
+        PublishStatus(this, iv);
+        return false;
+    }
     if (mach_absolute_time() < iv->healthHoldUntil) {
         return false;                               // a pending command goes out when the hold ends
     }
@@ -2218,15 +2227,16 @@ DroboSCSIController::HealthSend()
     bzero(memory, kDroboSlotSize);
     bzero(iv->requestVA + kHealthDataOffset, kHealthPageMax);
     // The event log read is the one request whose data goes to the larger buffer.
+    uint8_t * const logArea = iv->logVA;            // read once: Stop clears it from another queue
     const bool isLog = isCommand && iv->commandOperation == 0x22;
-    if (isLog && iv->logVA == nullptr) {
+    if (isLog && logArea == nullptr) {
         iv->commandPending = false;
         iv->commandOperation = 0;
         iv->logState = 3;
         return false;
     }
     if (isLog) {
-        bzero(iv->logVA, kLogChunk);
+        bzero(logArea, kLogChunk);
     }
     const uint64_t dataBusAddress = isLog ? iv->logBusAddress : iv->requestBusAddress + kHealthDataOffset;
 
@@ -2292,21 +2302,22 @@ DroboSCSIController::HealthResponse()
     if (iv->commandInflight && iv->commandOperation == 0x22) {
         // One chunk of the event log. The text has no zero bytes and the buffer was cleared,
         // so the first zero marks the end; a chunk that is not full is the last one.
-        const bool ok = scsiStatus == 0 && iv->logVA != nullptr &&
+        uint8_t * const logArea = iv->logVA;        // read once: Stop clears it from another queue
+        const bool ok = scsiStatus == 0 && logArea != nullptr &&
                         (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort);
         bool more = false;
         iv->logLastSRB = srbResponse;
         if (ok) {
             const uint32_t got = (transferred != 0 && transferred < kLogChunk) ? (uint32_t) transferred : kLogChunk;
             uint32_t used = 0;
-            if (iv->logVA[0] != 0x04) {             // 0x04 (end of transmission): nothing more
-                while (used < got && iv->logVA[used] != 0) {
+            if (logArea[0] != 0x04) {             // 0x04 (end of transmission): nothing more
+                while (used < got && logArea[used] != 0) {
                     used++;
                 }
             }
             const uint32_t room = kLogMax - iv->logLength;
             const uint32_t take = used < room ? used : room;
-            memcpy(iv->logText + iv->logLength, iv->logVA, take);
+            memcpy(iv->logText + iv->logLength, logArea, take);
             iv->logLength += take;
             iv->logChunks++;
             more = used == kLogChunk && iv->logLength < kLogMax && iv->logChunks < kLogMaxChunks;
@@ -2407,8 +2418,7 @@ IMPL(DroboSCSIController, HandleHealthTimer)
             iv->commandOperation = 0;
             iv->logState = 3;
             iv->logLastSRB = 0xFFFFFFFF;
-            iv->healthPage = kHealthPageCount;
-            iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kHealthHoldMS * iv->ticksPerMillisecond;
+            iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
             PublishStatus(this, iv);
         } else if (optional) {
             // An optional page went unanswered: give all of them up and keep the rest. Wait
