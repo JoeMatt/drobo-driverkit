@@ -67,3 +67,11 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     disk, which means it carries all of that disk's I/O. That needs its own entitlement, an
     owner of a USB unit to test with, and the same read-only-first discipline as this driver.
     Not started.
+16. **The Drobo's own event log** [driver, needs care]. Found by analysis, not yet sent
+    (protocol notes 11.16). It is not a management page: Dashboard reads it with system
+    operation `0x22`, in 32 KiB chunks. The driver's passthrough data area is 4 KiB, so this
+    needs a larger DMA buffer, a chunk loop and a way to hand the text to the app. It is a
+    vendor command this driver has never sent; try it first on a Drobo that is protected, not
+    one that is rebuilding. The app side (84 event names and severities) is straightforward.
+17. **Drive history, next steps** [app]. Recorded only while the app runs. Still open: per-bay
+    detail view, export, and using the Drobo's own log (item 16) to fill the gaps.

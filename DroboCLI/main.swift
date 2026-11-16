@@ -199,7 +199,7 @@ func drivesText(_ slots: [DroboSlot]) -> String {
 
     var header: [String] = ["BAY", "SIZE", "STATUS"]
     if detailed {
-        header += ["RPM", "LIFE", "ERRORS"]
+        header += ["STATE", "RPM", "LIFE", "ERRORS"]
         if warm { header.append("TEMP") }
         header.append("FIRMWARE")
     }
@@ -212,7 +212,8 @@ func drivesText(_ slots: [DroboSlot]) -> String {
             let speed: String = slot.isSolidState ? "SSD" : (slot.rpm.map { String($0) } ?? "-")
             let life: String = slot.lifeRemaining.map { "\($0)%" } ?? "-"
             let errors: String = slot.errorCount.map { String($0) } ?? "-"
-            row += [speed, life, errors]
+            let state: String = slot.diskStateText ?? "-"
+            row += [state, speed, life, errors]
             if warm {
                 let temperature: String = slot.temperature.map { "\($0) C" } ?? "-"
                 row.append(temperature)
@@ -243,6 +244,8 @@ func driveJSON(_ slot: DroboSlot) -> [String: Any] {
     if let life = slot.lifeRemaining { drive["lifeRemainingPercent"] = life }
     if let rpm = slot.rpm { drive["rpm"] = rpm }
     if slot.errorCount != nil { drive["solidState"] = slot.isSolidState }
+    if let state = slot.diskStateText { drive["diskState"] = state }
+    if let type = slot.diskTypeText { drive["diskType"] = type }
     if !slot.firmwareRevision.isEmpty { drive["firmware"] = slot.firmwareRevision }
     if !slot.serial.isEmpty { drive["serial"] = slot.serial }
     return drive

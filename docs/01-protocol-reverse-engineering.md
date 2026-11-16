@@ -895,6 +895,47 @@ dual redundancy and spin-down have not been mapped; on the maintainer's unit bit
   mSATA bay holds a good drive, not a switch. The app shows the SSD bay's state on Summary and
   does not claim more than that.
 
+
+### 11.16 Disk state, disk type, bay light states; the event log request (2026-11-16)
+
+Static analysis of Drobo Dashboard 3.6.1 (service and UI binaries); nothing was sent to a
+Drobo. **[obs]** unless marked.
+
+**Disk state** (page `35`, record offset `0x04`, u32). Dashboard reads only the low four bits
+(`DDUtils::GetDiskState`, `ESAAlertHistory::GetDiskState`, both mask with `0x0F`):
+
+| Value | Meaning |
+|---|---|
+| 0 | Good |
+| 1 | Healed |
+| 2 | Warning |
+| 3 | Failed |
+
+The 8D also sets `0x10` (hard disks) or `0x20` (SSD). Dashboard ignores those bits and their
+meaning is not known. The app shows the low four bits as "State" and treats 2 and 3 as a
+flagged drive in the drive history.
+
+**Disk type** (offset `0x08`): 0 SATA hard disk, 1 SAS hard disk, 2 SATA SSD, 3 SAS SSD,
+4 mSATA SSD (the accelerator bay), `0xFF` not provided.
+
+**Bay status byte** (page `03`, and page `35` offset `0x01`): bit `0x80` means empty; the low
+four bits are the light: 1 red, 2 yellow, 3 green, 4 flashing yellow/green (rebuild), 6
+flashing red. 5, 7 and 8 are flashing green/red, yellow/red and yellow/off **[inf]** from the
+drawing code.
+
+**The event log is not a management page.** `ESAEventMessages` (sub-page `80`) is unused in
+Dashboard and carries only "page changed" notices. `ESADeviceSerial` shares the number because
+it is the standard INQUIRY VPD page `0x80`. The log users see comes from
+`ESASCSISession::getUserEventLog`: system operation `0x22`, data-in,
+
+    EA 10 80 22 <sequence> 00 <20 on the first chunk, 00 after> 80 00 00
+
+32 KiB per chunk, repeated until a short chunk (the exact stop test is **[inf]**). The answer
+is text, one event per line: a 24-character timestamp, `": "`, then `<id>:<key>=<value>,...`.
+Event ids run from 100 to 1643 (100 power on, 200 disk inserted, 211 disk channel failure,
+229 disk expunged, ...); names and severities are tables in the UI binary. **Not sent by this
+driver and not tried on an 8D.** See backlog item 16.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

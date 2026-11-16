@@ -480,6 +480,9 @@ struct ContentView: View {
                     HStack(spacing: 14) {
                         if slot.isSolidState { fact("Type", "SSD") } else if let rpm = slot.rpm { fact("Speed", "\(rpm) rpm") }
                         if let life = slot.lifeRemaining { fact("Life left", "\(life)%", tint: life < 20 ? Theme.amber : nil) }
+                        if let state = slot.diskStateText, let code = slot.diskStateCode {
+                            fact("State", state, tint: code >= 3 ? Theme.coral : (code >= 1 ? Theme.amber : nil))
+                        }
                         if let errors = slot.errorCount { fact("Errors", "\(errors)", tint: errors > 0 ? Theme.amber : nil) }
                         fact("Temp", slot.temperature.map { "\($0) °C" } ?? "not reported")
                     }

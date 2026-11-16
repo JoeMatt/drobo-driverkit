@@ -63,6 +63,7 @@ enum Demo {
             slot.lifeRemaining = 100
             slot.rotationalSpeed = bay < 4 ? 27 : 36
             slot.diskType = 0
+            slot.diskState = rebuilding && bay == 2 ? 0x12 : (bay == 4 ? 0x11 : 0x10)
             slot.errorCount = rebuilding && bay == 2 ? 14 : 0
             slot.firmwareRevision = bay < 2 ? "81.00A81" : (bay < 4 ? "SC61" : "82.00A82")
             slot.serial = "DEMO\(1000 + bay * 137)"

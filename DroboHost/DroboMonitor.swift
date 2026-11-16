@@ -33,10 +33,35 @@ struct DroboSlot: Identifiable {
     var rotationalSpeed: Int?
     /// 0 for hard disks and 2 for the SSD on the 8D.
     var diskType: Int?
-    /// Raw value whose encoding is not known yet; kept for diagnostics, not shown.
+    /// The Drobo's own verdict on the drive. Drobo Dashboard reads only the low four bits
+    /// (protocol notes 11.16); the 8D also sets 0x10 or 0x20, which Dashboard ignores.
     var diskState: UInt32?
 
-    var isSolidState: Bool { rotationalSpeed == 1 || diskType == 2 }
+    /// 0 good, 1 healed, 2 warning, 3 failed.
+    var diskStateCode: Int? { diskState.map { Int($0 & 0x0F) } }
+    var diskStateText: String? {
+        guard let code = diskStateCode else { return nil }
+        switch code {
+        case 0: return "Good"
+        case 1: return "Healed"
+        case 2: return "Warning"
+        case 3: return "Failed"
+        default: return "Unknown (\(code))"
+        }
+    }
+    var diskTypeText: String? {
+        guard let type = diskType else { return nil }
+        switch type {
+        case 0: return "SATA hard disk"
+        case 1: return "SAS hard disk"
+        case 2: return "SATA SSD"
+        case 3: return "SAS SSD"
+        case 4: return "mSATA SSD"
+        default: return nil
+        }
+    }
+
+    var isSolidState: Bool { rotationalSpeed == 1 || (diskType.map { $0 >= 2 && $0 <= 4 } ?? false) }
     var rpm: Int? { rotationalSpeed.flatMap { $0 > 1 ? $0 * 200 : nil } }
 
     var isEmpty: Bool { statusCode == 0x80 }
@@ -52,6 +77,8 @@ struct DroboSlot: Identifiable {
         case 4: return "Rebuilding"
         case 5: return "Warning"
         case 6: return "Failed, replace"
+        case 7: return "Warning (yellow and red)"
+        case 8: return "Warning (flashing yellow)"
         default: return "Unknown (\(statusCode))"
         }
     }
@@ -608,7 +635,7 @@ enum DroboMonitor {
             "slots": current.slots.map {
                 ["bay": $0.id, "status": $0.statusText, "statusCode": Int($0.statusCode), "model": $0.model,
                  "temperature": $0.temperature ?? -1, "errorCount": $0.errorCount ?? -1, "firmwareRevision": $0.firmwareRevision,
-                 "diskState": Int($0.diskState ?? 0), "diskType": $0.diskType ?? -1,
+                 "diskState": Int($0.diskState ?? 0), "diskStateText": $0.diskStateText ?? "", "diskType": $0.diskType ?? -1,
                  "lifeRemaining": $0.lifeRemaining ?? -1, "rotationalSpeed": $0.rotationalSpeed ?? -1] as [String: Any]
             },
             "lunBlocks": current.lunBlocks,

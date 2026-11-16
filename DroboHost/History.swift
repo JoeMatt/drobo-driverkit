@@ -162,6 +162,15 @@ final class EventLog: ObservableObject {
             add(.warning, "\(slot.id < 8 ? "Bay \(slot.id + 1)" : "SSD bay"): drive error count rose to \(now)", slot.model)
         }
 
+        // The Drobo's own verdict on each drive (good, healed, warning, failed).
+        for slot in latest.slots where !slot.isEmpty {
+            guard let now = slot.diskStateCode, let text = slot.diskStateText,
+                  let before = previous.slots.first(where: { $0.id == slot.id }),
+                  let old = before.diskStateCode, let oldText = before.diskStateText, old != now else { continue }
+            let level: DroboEvent.Level = now >= 3 ? .critical : (now >= 1 ? .warning : .good)
+            add(level, "\(slot.id < 8 ? "Bay \(slot.id + 1)" : "SSD bay"): drive state \(oldText) → \(text)", slot.model)
+        }
+
         if latest.errors > previous.errors {
             add(.warning, "The driver reported \(latest.errors - previous.errors) I/O error(s)", "Total since it started: \(latest.errors).")
         }

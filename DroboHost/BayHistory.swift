@@ -15,7 +15,7 @@ struct BayChange: Codable, Identifiable {
     var boot = 0
 
     /// The Drobo is complaining about this drive (as opposed to healthy, rebuilding or empty).
-    var isFault: Bool { BayHistory.isFault(statusCode) }
+    var isFault: Bool { BayHistory.isFault(statusCode) || (statusCode != 0x80 && (diskState.map { $0 & 0x0F >= 2 } ?? false)) }
 }
 
 /// A stretch of time a bay spent flagged.
@@ -99,7 +99,7 @@ final class BayHistory: ObservableObject {
     static func isFault(_ code: UInt8) -> Bool {
         guard code != 0x80 else { return false }
         switch code & 0x0F {
-        case 1, 2, 5, 6: return true
+        case 1, 2, 5, 6, 7, 8: return true
         default: return false
         }
     }
