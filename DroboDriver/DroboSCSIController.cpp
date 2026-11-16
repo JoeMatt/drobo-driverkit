@@ -79,6 +79,10 @@ static const uint8_t  kHealthPages[kHealthPageCount] = {
 // asked for only after the app turns them on. A page the Drobo refuses is given up on its own;
 // if one goes unanswered they are all given up. Either way until the driver restarts.
 static const uint32_t kHealthFirstOptional = 9;
+static const uint32_t kLogChunk        = 0x8000;    // what Drobo Dashboard asks for per request
+static const uint32_t kLogMaxChunks    = 8;
+static const uint32_t kLogMax          = kLogChunk * kLogMaxChunks;
+static const uint32_t kLogCopyMax      = 4096;      // bytes handed to the app per call
 static const uint32_t kHealthHoldMS       = 30000;  // pause after an optional page times out
 static const uint32_t kSysSlot         = 33;        // request slot for system-control requests
 static const uint32_t kMaxFlushWaiters = 32;
@@ -230,6 +234,17 @@ struct DroboSCSIController_IVars
     uint8_t                    commandOperation;    // system operation code of the command in flight
     bool                       dimKnown;
     uint32_t                   dimLevel;
+    // The Drobo's own event log (system operation 0x22, protocol notes 11.17). Read only when
+    // the app asks, in 32 KiB chunks through a buffer of its own.
+    IOBufferMemoryDescriptor * logBuffer;
+    IODMACommand *             logDMA;
+    uint8_t *                  logVA;
+    uint64_t                   logBusAddress;
+    uint8_t *                  logText;             // kLogMax bytes
+    uint32_t                   logLength;
+    uint32_t                   logChunks;
+    uint32_t                   logState;            // 0 never read, 1 reading, 2 read, 3 failed, 4 no buffer
+    uint32_t                   logLastSRB;
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
 
@@ -295,6 +310,11 @@ DroboSCSIController::free()
         OSSafeReleaseNULL(ivars->interruptQueue);
         OSSafeReleaseNULL(ivars->requestDMA);
         OSSafeReleaseNULL(ivars->requestBuffer);
+        OSSafeReleaseNULL(ivars->logDMA);
+        OSSafeReleaseNULL(ivars->logBuffer);
+        if (ivars->logText != nullptr) {
+            IOSafeDeleteNULL(ivars->logText, uint8_t, kLogMax);
+        }
         OSSafeReleaseNULL(ivars->pciDevice);
         IOSafeDeleteNULL(ivars, DroboSCSIController_IVars, 1);
     }
@@ -536,7 +556,12 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     // 2 = system operations use Drobo Dashboard's framing (v0.27.0, protocol notes 11.14). The
     // app refuses to send blink, standby or restart to a driver that does not report this.
     // 3 adds the LED dim level commands (v0.28.0).
-    DictSetNumber(status, "CommandFormat", 3);
+    // 4 adds the event log read (v0.29.0).
+    DictSetNumber(status, "CommandFormat", 4);
+    DictSetNumber(status, "EventLogState", (iv->logVA == nullptr || iv->logText == nullptr) ? 4 : iv->logState);
+    DictSetNumber(status, "EventLogLength", iv->logState == 2 ? iv->logLength : 0);
+    DictSetNumber(status, "EventLogChunks", iv->logChunks);
+    DictSetNumber(status, "EventLogSRB", iv->logLastSRB);
     if (iv->dimKnown) {
         DictSetNumber(status, "DimLevel", iv->dimLevel);
     }
@@ -725,6 +750,39 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
         return false;
     }
     iv->requestBusAddress = segments[0].address;
+
+    // Event log buffer: 32 KiB in one piece below 4 GiB. Optional: without it everything else
+    // works and the log command answers "unsupported".
+    if (IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, kLogChunk, 0x4000, &iv->logBuffer) == kIOReturnSuccess) {
+        iv->logBuffer->SetLength(kLogChunk);
+        IOAddressSegment logRange = {};
+        iv->logBuffer->GetAddressRange(&logRange);
+        uint64_t logFlags = 0;
+        uint32_t logSegmentCount = 32;
+        IOAddressSegment logSegments[32] = {};
+        bool usable = false;
+        if (IODMACommand::Create(pci, kIODMACommandCreateNoOptions, &spec, &iv->logDMA) == kIOReturnSuccess) {
+            const kern_return_t prepared = iv->logDMA->PrepareForDMA(kIODMACommandPrepareForDMANoOptions, iv->logBuffer, 0,
+                                                                    kLogChunk, &logFlags, &logSegmentCount, logSegments);
+            if (prepared == kIOReturnSuccess) {
+                usable = logSegmentCount == 1 && logSegments[0].length >= kLogChunk &&
+                         (logSegments[0].address >> 32) == 0 && logRange.address != 0;
+                if (!usable) {
+                    DLog("event log buffer not usable: segs %u addr 0x%llx len 0x%llx",
+                         logSegmentCount, logSegments[0].address, logSegments[0].length);
+                    iv->logDMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+                }
+            }
+        }
+        if (usable) {
+            iv->logVA = (uint8_t *) logRange.address;
+            iv->logBusAddress = logSegments[0].address;
+            iv->logText = IONewZero(uint8_t, kLogMax);
+        } else {
+            OSSafeReleaseNULL(iv->logDMA);
+            OSSafeReleaseNULL(iv->logBuffer);
+        }
+    }
 
     // Wait for the firmware: handshake acknowledged, DroboPort published, adapter ready.
     SetStage(iv, "waiting-for-firmware");
@@ -1116,6 +1174,10 @@ IMPL(DroboSCSIController, Stop)
     if (ivars->requestDMA != nullptr) {
         ivars->requestDMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
     }
+    if (ivars->logDMA != nullptr && ivars->logVA != nullptr) {
+        ivars->logVA = nullptr;         // no more log reads
+        ivars->logDMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+    }
     if (ivars->pciDevice != nullptr && ivars->pciOpen) {
         ivars->pciDevice->Close(this, 0);
         ivars->pciOpen = false;
@@ -1167,7 +1229,57 @@ enum : uint32_t {
     kDroboAppCommandRestart     = 7,
     kDroboAppCommandSetDim      = 8,    // argument = LED dim level, 0 (brightest) to 9
     kDroboAppCommandGetDim      = 9,    // reads the LED dim level into DroboStatus "DimLevel"
+    kDroboAppCommandReadLog     = 10,   // reads the Drobo's event log; fetch it with CopyLog
 };
+
+
+// The next request for the event log, exactly as Drobo Dashboard builds it
+// (ESASCSISession::getUserEventLog, protocol notes 11.17):
+//   EA 10 80 22 <sequence> 00 <20 first, 00 after> 80 00 00, 0x8000 bytes data-in.
+static void
+PrepareLogChunk(DroboSCSIController_IVars * iv)
+{
+    bzero(iv->commandCDB, sizeof(iv->commandCDB));
+    iv->commandCDB[0] = 0xEA;
+    iv->commandCDB[1] = 0x10;
+    iv->commandCDB[2] = 0x80;
+    iv->commandCDB[3] = 0x22;
+    iv->commandCDB[4] = ++iv->commandSequence;
+    iv->commandCDB[6] = iv->logChunks == 0 ? 0x20 : 0x00;
+    iv->commandCDB[7] = (uint8_t) (kLogChunk >> 8);
+    iv->commandCDB[8] = (uint8_t) kLogChunk;
+    iv->commandDataOut   = false;
+    iv->commandLength    = kLogChunk;
+    iv->commandOperation = 0x22;
+}
+
+// Hands the app up to `capacity` bytes of the log read last, starting at `offset`.
+kern_return_t
+DroboSCSIController::CopyLog(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied)
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (iv == nullptr || destination == nullptr || copied == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    *copied = 0;
+    const uint32_t length = iv->logLength;
+    if (iv->logText == nullptr || iv->logState != 2 || length > kLogMax) {
+        return kIOReturnNotReady;
+    }
+    if (offset >= length) {
+        return kIOReturnUnderrun;
+    }
+    uint32_t count = length - offset;
+    if (count > capacity) {
+        count = capacity;
+    }
+    if (count > kLogCopyMax) {
+        count = kLogCopyMax;
+    }
+    memcpy(destination, iv->logText + offset, count);
+    *copied = count;
+    return kIOReturnSuccess;
+}
 
 kern_return_t
 DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char * name)
@@ -1226,6 +1338,24 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     PublishHealth();
                 }
                 PublishStatus(this, iv);
+                break;
+            }
+            case kDroboAppCommandReadLog: {
+                if (iv->commandPending || iv->commandInflight || !iv->healthAvailable || iv->logState == 1) {
+                    result = kIOReturnBusy;
+                    break;
+                }
+                if (iv->logVA == nullptr || iv->logText == nullptr) {
+                    result = kIOReturnUnsupported;
+                    break;
+                }
+                iv->logLength = 0;
+                iv->logChunks = 0;
+                iv->logState = 1;
+                PrepareLogChunk(iv);
+                iv->commandPending = true;
+                PublishStatus(this, iv);
+                HealthSend();
                 break;
             }
             case kDroboAppCommandBlink:
@@ -2087,6 +2217,18 @@ DroboSCSIController::HealthSend()
     uint8_t * memory = iv->requestVA + kHealthSlot * kDroboSlotSize;
     bzero(memory, kDroboSlotSize);
     bzero(iv->requestVA + kHealthDataOffset, kHealthPageMax);
+    // The event log read is the one request whose data goes to the larger buffer.
+    const bool isLog = isCommand && iv->commandOperation == 0x22;
+    if (isLog && iv->logVA == nullptr) {
+        iv->commandPending = false;
+        iv->commandOperation = 0;
+        iv->logState = 3;
+        return false;
+    }
+    if (isLog) {
+        bzero(iv->logVA, kLogChunk);
+    }
+    const uint64_t dataBusAddress = isLog ? iv->logBusAddress : iv->requestBusAddress + kHealthDataOffset;
 
     DroboPassthroughRequest * request = (DroboPassthroughRequest *) memory;
     DroboSGLEntry *           sgl     = (DroboSGLEntry *) (memory + sizeof(DroboPassthroughRequest));
@@ -2102,7 +2244,7 @@ DroboSCSIController::HealthSend()
                                                                              : kDroboPassthroughDataInOrNone) |
                                          kDroboPassthroughDirectBuffer;
     request->transferLength            = length;
-    request->hostSGLPointer            = iv->requestBusAddress + kHealthDataOffset;
+    request->hostSGLPointer            = dataBusAddress;
     // MODE SENSE(10): page 0x3A (vendor), sub-page = the management page, big-endian length.
     if (isCommand) {
         memcpy(request->cdb, iv->commandCDB, sizeof(request->cdb));
@@ -2118,7 +2260,7 @@ DroboSCSIController::HealthSend()
         request->cdb[7] = (uint8_t) (length >> 8);
         request->cdb[8] = (uint8_t) length;
     }
-    sgl[0].address = iv->requestBusAddress + kHealthDataOffset;
+    sgl[0].address = dataBusAddress;
     sgl[0].length  = 0;                             // cleared in direct-buffer mode, as the kext does
 
     // The original driver uses transaction ID 0 on this channel.
@@ -2147,6 +2289,43 @@ DroboSCSIController::HealthResponse()
     const uint32_t scsiStatus  = Port32(iv, base + 0x18);
     RegWrite32(iv, kDroboRegOutgoingDoorbellCause, ~kOutBitTMResponse);
 
+    if (iv->commandInflight && iv->commandOperation == 0x22) {
+        // One chunk of the event log. The text has no zero bytes and the buffer was cleared,
+        // so the first zero marks the end; a chunk that is not full is the last one.
+        const bool ok = scsiStatus == 0 && iv->logVA != nullptr &&
+                        (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort);
+        bool more = false;
+        iv->logLastSRB = srbResponse;
+        if (ok) {
+            const uint32_t got = (transferred != 0 && transferred < kLogChunk) ? (uint32_t) transferred : kLogChunk;
+            uint32_t used = 0;
+            if (iv->logVA[0] != 0x04) {             // 0x04 (end of transmission): nothing more
+                while (used < got && iv->logVA[used] != 0) {
+                    used++;
+                }
+            }
+            const uint32_t room = kLogMax - iv->logLength;
+            const uint32_t take = used < room ? used : room;
+            memcpy(iv->logText + iv->logLength, iv->logVA, take);
+            iv->logLength += take;
+            iv->logChunks++;
+            more = used == kLogChunk && iv->logLength < kLogMax && iv->logChunks < kLogMaxChunks;
+        }
+        iv->commandInflight = false;
+        iv->tmInflight = false;
+        if (more) {
+            PrepareLogChunk(iv);
+            iv->commandPending = true;              // goes out now, or from the timer if the channel is busy
+        } else {
+            iv->commandOperation = 0;
+            iv->logState = ok ? 2 : 3;
+            iv->lastCommandSRB = srbResponse;
+            iv->statCommands++;
+            PublishStatus(this, iv);
+        }
+        HealthSend();
+        return;
+    }
     if (iv->commandInflight) {
         // Answer to an app command (blink, standby, rename): record it and carry on polling.
         if (iv->commandOperation == 0x21 && scsiStatus == 0 &&
@@ -2218,10 +2397,20 @@ IMPL(DroboSCSIController, HandleHealthTimer)
     if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > 10000 * iv->ticksPerMillisecond) {
         const bool optional = !iv->commandInflight && iv->healthPage >= kHealthFirstOptional &&
                               iv->healthPage < kHealthPageCount;
+        const bool logRead = iv->commandInflight && iv->commandOperation == 0x22;
         iv->tmInflight = false;
         iv->commandInflight = false;
         iv->healthErrors++;
-        if (optional) {
+        if (logRead) {
+            // The log request went unanswered. Give it up, keep everything else, and wait so a
+            // late answer cannot be taken for a status page's.
+            iv->commandOperation = 0;
+            iv->logState = 3;
+            iv->logLastSRB = 0xFFFFFFFF;
+            iv->healthPage = kHealthPageCount;
+            iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kHealthHoldMS * iv->ticksPerMillisecond;
+            PublishStatus(this, iv);
+        } else if (optional) {
             // An optional page went unanswered: give all of them up and keep the rest. Wait
             // before asking for anything else, so a late answer cannot be taken for another
             // page's (responses on this channel carry no usable transaction ID).

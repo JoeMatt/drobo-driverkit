@@ -69,6 +69,37 @@ DroboUserClient::ExternalMethod(uint64_t selector,
                                 OSObject * target,
                                 void * reference)
 {
+    // Selector 1: a slice of the event log read last. Input: u32 offset. Output: up to 4096 bytes.
+    if (selector == 1) {
+        if (arguments == nullptr || arguments->structureInput == nullptr ||
+            arguments->structureInput->getLength() < sizeof(uint32_t) ||
+            ivars == nullptr || ivars->controller == nullptr) {
+            return kIOReturnBadArgument;
+        }
+        uint32_t offset = 0;
+        memcpy(&offset, arguments->structureInput->getBytesNoCopy(), sizeof(offset));
+        uint32_t capacity = 4096;
+        if (arguments->structureOutputMaximumSize < capacity) {
+            capacity = (uint32_t) arguments->structureOutputMaximumSize;
+        }
+        if (capacity == 0) {
+            return kIOReturnBadArgument;
+        }
+        uint8_t * slice = IONewZero(uint8_t, 4096);
+        if (slice == nullptr) {
+            return kIOReturnNoMemory;
+        }
+        uint32_t copied = 0;
+        kern_return_t result = ivars->controller->CopyLog(offset, slice, capacity, &copied);
+        if (result == kIOReturnSuccess) {
+            arguments->structureOutput = OSData::withBytes(slice, copied);
+            if (arguments->structureOutput == nullptr) {
+                result = kIOReturnNoMemory;
+            }
+        }
+        IOSafeDeleteNULL(slice, uint8_t, 4096);
+        return result;
+    }
     if (selector != 0 || arguments == nullptr || arguments->structureInput == nullptr ||
         arguments->structureInput->getLength() < sizeof(DroboAppCommandInput) ||
         ivars == nullptr || ivars->controller == nullptr) {

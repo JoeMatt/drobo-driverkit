@@ -118,6 +118,7 @@ enum DroboCommand: UInt32 {
     case restart = 7
     case setDim = 8
     case getDim = 9
+    case readLog = 10
 }
 
 /// The driver's own timing for one size class of block request.
@@ -171,6 +172,11 @@ struct DroboSnapshot {
     var commandFormat = 0
     var systemOperationsSafe: Bool { commandFormat >= 2 }
     var dimmingAvailable: Bool { commandFormat >= 3 }
+    /// The driver can ask the Drobo for its own event log (driver 0.29.0).
+    var eventLogAvailable: Bool { commandFormat >= 4 && eventLogState != 4 }
+    /// 0 never read, 1 reading, 2 read, 3 the Drobo did not return it, 4 the driver has no buffer for it.
+    var eventLogState = 0
+    var eventLogLength = 0
     /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
     var dimLevel: Int?
 
@@ -253,6 +259,8 @@ enum DroboMonitor {
             snapshot.flushForwarding = status["FlushForwarding"] as? Bool ?? false
             snapshot.flushes = UInt64(number(status["Flushes"]))
             snapshot.commandFormat = number(status["CommandFormat"])
+            snapshot.eventLogState = Int(number(status["EventLogState"]))
+            snapshot.eventLogLength = Int(number(status["EventLogLength"]))
             snapshot.dimLevel = (status["DimLevel"] as? NSNumber)?.intValue
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
@@ -684,7 +692,7 @@ enum DroboMonitor {
 
     // MARK: Registry access
 
-    private static func driverService() -> io_service_t? {
+    static func driverService() -> io_service_t? {
         var iterator: io_iterator_t = 0
         let matching = IOServiceMatching("IOUserSCSIParallelInterfaceController")
         guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {

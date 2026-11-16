@@ -57,7 +57,11 @@ struct ContentView: View {
                         case .summary: summaryTab
                         case .drives: drivesTab
                         case .volumes: volumesTab
-                        case .events: EventsTab(log: dashboard.events)
+                        case .events:
+                            VStack(spacing: 14) {
+                                DroboLogCard(model: dashboard)
+                                EventsTab(log: dashboard.events)
+                            }
                         case .performance: PerformanceTab(history: dashboard.performance)
                         case .advanced: advancedTab
                         }

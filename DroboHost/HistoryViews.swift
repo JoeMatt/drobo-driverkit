@@ -37,7 +37,7 @@ struct EventsTab: View {
                         if event.id != log.events.prefix(300).last?.id { Rectangle().fill(Theme.hairline).frame(height: 1) }
                     }
                 }
-                Text("Recorded by this app while it is running. The Drobo's own log is not read.")
+                Text("Recorded by this app while it is running.")
                     .font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
             }
         }

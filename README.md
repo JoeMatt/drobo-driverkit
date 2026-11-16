@@ -21,6 +21,8 @@ for the direct-attached Thunderbolt units.
 - **Drive history**: each bay's status over two weeks, kept across restarts. It tells a drive
   that is flagged and comes back from one that stays failed, and says so when several bays do
   it together, which points at the power supply or backplane rather than the drives.
+- **The Drobo's own event log**, read on request: power events, drive errors and rebuilds the
+  unit recorded itself. Built from analysis and not yet confirmed on a Drobo.
 - **Alerts** as notifications and, optionally, to a webhook.
 - **`drobo`**, a read-only command for scripts, status lines and Prometheus-style monitoring.
 
@@ -76,6 +78,7 @@ drobo volume "Time Machine" # one volume, by name or unit number
 drobo get percent           # one bare value; `drobo keys` lists them
 drobo all --json            # for dashboards
 drobo --watch 5             # redraw every 5 seconds
+drobo log                   # the Drobo's own event log, as last read in the app
 drobo history               # each bay over 14 days, and what the pattern suggests
 drobo diagnostics > d.json  # raw driver state for a bug report, serial and name removed
 drobo metrics               # Prometheus text format, for Grafana-style monitoring

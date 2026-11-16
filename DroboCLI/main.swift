@@ -20,6 +20,7 @@ commands
   all                    device, drives and volumes
   get <key>              one bare value, for scripts and status lines
   keys                   list the keys `get` accepts
+  log                    the Drobo's own event log, as last read in the app (Events tab, Read from Drobo)
   history                each bay over the last 14 days: flagged, recovered, restarts, and what the pattern suggests
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
@@ -517,6 +518,36 @@ func run() -> Int32 {
         return 0
     case "metrics":
         print(metricsText(state))
+        return 0
+    case "log":
+        // Prints what the driver already holds. Asking the Drobo for it is done in the app.
+        var data: Data?
+        if demo != nil {
+            data = Data(DroboLog.demo.utf8)
+        } else if state.snapshot.eventLogState == 2 {
+            data = DroboLog.fetch(length: state.snapshot.eventLogLength)
+        }
+        guard let data else {
+            FileHandle.standardError.write(Data("No log read yet. Open the app's Events tab and press Read from Drobo.\n".utf8))
+            return 1
+        }
+        let entries = DroboLog.parse(data)
+        if json {
+            var rows: [[String: Any]] = []
+            for entry in entries {
+                var row: [String: Any] = ["time": entry.stamp, "code": entry.code, "severity": entry.severity, "text": entry.text]
+                var details: [String: String] = [:]
+                for parameter in entry.parameters { details[parameter.key] = parameter.value }
+                row["parameters"] = details
+                rows.append(row)
+            }
+            printJSON(rows)
+        } else {
+            for entry in entries {
+                let mark = entry.severity >= 2 ? "!" : (entry.severity == 1 ? "*" : " ")
+                print("\(entry.stamp)  \(mark) \(entry.text)")
+            }
+        }
         return 0
     case "history":
         // Recorded by the app (or its menu bar item) while it runs; this only reads the file.

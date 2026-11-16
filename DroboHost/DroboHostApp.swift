@@ -239,6 +239,11 @@ final class DashboardModel: ObservableObject {
     /// History for the Events and Performance tabs. Demo mode never touches the saved log.
     let events = EventLog(persist: Demo.scenario == nil)
     let bays = BayHistory(persist: Demo.scenario == nil)
+    /// The Drobo's own event log, newest first, as last read through the driver.
+    @Published var droboLog: [DroboLogEntry] = []
+    @Published var droboLogStatus = ""
+    private var droboLogRequested = false
+    private var droboLogLoadedLength = -1
     let performance = PerformanceHistory()
 
     private var timer: Timer?
@@ -326,6 +331,8 @@ final class DashboardModel: ObservableObject {
                 writableSeeded = true
                 events.seedDemo(rebuilding: scenario == "rebuilding")
                 bays.seed(.demo(rebuilding: scenario == "rebuilding"))
+                droboLog = DroboLog.newestFirst(DroboLog.parse(Data(DroboLog.demo.utf8)))
+                droboLogStatus = "\(droboLog.count) events (demo data)"
                 performance.seedDemo(rebuilding: scenario == "rebuilding")
             }
             return
@@ -378,6 +385,7 @@ final class DashboardModel: ObservableObject {
         luns = DroboMonitor.luns(latest, volumes: volumes)
         events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
         bays.record(latest, now: now)
+        syncDroboLog(latest)
         syncExtended(latest)
         // Keep icons this app set earlier in step with how full each volume is.
         let writableVolumes = volumes.filter { volume in luns.contains { $0.id == volume.lun && $0.writable } }.map(\.id)
@@ -448,6 +456,51 @@ final class DashboardModel: ObservableObject {
     }
 
     /// Asks the Drobo for its LED dim level; the answer shows up in the next poll.
+    /// Asks the Drobo for its own event log. The driver reads it in the background; `syncDroboLog`
+    /// picks it up when it is in.
+    func readDroboLog() {
+        guard Demo.scenario == nil else { return }
+        guard snapshot.commandFormat >= 4 else {
+            droboLogStatus = "Reading the Drobo's log needs driver 0.29.0 or later. Press Activate on the Advanced tab first."
+            return
+        }
+        guard snapshot.eventLogState != 4 else {
+            droboLogStatus = "The driver could not set up the buffer the log needs. Nothing was sent to the Drobo."
+            return
+        }
+        guard snapshot.healthAvailable else {
+            droboLogStatus = "The Drobo is not answering status requests yet."
+            return
+        }
+        if let error = DroboMonitor.send(.readLog) {
+            droboLogStatus = error
+        } else {
+            droboLogRequested = true
+            droboLogStatus = "Reading…"
+        }
+    }
+
+    private func syncDroboLog(_ latest: DroboSnapshot) {
+        if droboLogRequested, latest.eventLogState == 3 {
+            droboLogRequested = false
+            droboLogStatus = "The Drobo did not return its log. Status polling carries on; nothing else was affected."
+            return
+        }
+        // Also picks up a log the driver already holds when the app starts.
+        guard latest.eventLogState == 2, latest.eventLogLength != droboLogLoadedLength || droboLogRequested else { return }
+        droboLogRequested = false
+        droboLogLoadedLength = latest.eventLogLength
+        guard latest.eventLogLength > 0, let data = DroboLog.fetch(length: latest.eventLogLength) else {
+            droboLog = []
+            droboLogStatus = "The Drobo answered with an empty log."
+            return
+        }
+        droboLog = DroboLog.newestFirst(DroboLog.parse(data))
+        droboLogStatus = droboLog.isEmpty
+            ? "The Drobo answered (\(data.count) bytes) but no line was in the expected format. Save diagnostics and report it."
+            : "\(droboLog.count) events, read \(Date().formatted(date: .omitted, time: .shortened))"
+    }
+
     func readDimLevel() {
         guard snapshot.dimmingAvailable, snapshot.healthAvailable else { return }
         _ = DroboMonitor.send(.getDim)

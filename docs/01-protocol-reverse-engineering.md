@@ -933,8 +933,31 @@ it is the standard INQUIRY VPD page `0x80`. The log users see comes from
 32 KiB per chunk, repeated until a short chunk (the exact stop test is **[inf]**). The answer
 is text, one event per line: a 24-character timestamp, `": "`, then `<id>:<key>=<value>,...`.
 Event ids run from 100 to 1643 (100 power on, 200 disk inserted, 211 disk channel failure,
-229 disk expunged, ...); names and severities are tables in the UI binary. **Not sent by this
-driver and not tried on an 8D.** See backlog item 16.
+229 disk expunged, ...); names and severities are tables in the UI binary.
+
+### 11.17 Event log read in the driver (driver v0.29.0, 2026-11-16)
+
+The driver sends the request above only when the app asks (Events tab, "Read from Drobo"),
+never on its own. **Not yet tried on a Drobo**: everything below is how it is built, not what
+was observed.
+
+- The data goes to a second DMA buffer of 32 KiB, because the passthrough data area is 4 KiB.
+  The buffer must come back as one segment below 4 GiB; if it does not, the command answers
+  "unsupported" and nothing is sent.
+- Chunks are requested with Dashboard's exact bytes and length. The buffer is cleared first and
+  the text has no zero bytes, so the first zero ends a chunk; a chunk that is not full, or one
+  starting with `0x04`, ends the log. At most 8 chunks (256 KiB) are kept.
+- Dashboard's abort request after a failure (`EA 10 00 22 <sequence> 00 40 00 00 00`) is not
+  sent.
+- No answer within 10 s: the read is given up, status polling pauses for 30 s (so a late answer
+  cannot be taken for a status page) and then carries on. Block I/O is not involved.
+- The app copies the text out through user-client selector 1, 4 KiB per call. `DroboStatus`
+  gains `EventLogState` (0 never, 1 reading, 2 read, 3 failed, 4 no buffer), `EventLogLength`,
+  `EventLogChunks`, `EventLogSRB`; `CommandFormat` is 4.
+- Times are parsed as Pacific time, as Dashboard does **[inf]**; bay numbers are shown as the
+  Drobo prints them, and whether they count from 0 or 1 is not known.
+- The app's event descriptions are this project's wording for ids 100 to 671. The NAS-only ids
+  (1500 and up) are shown as numbers.
 
 ## 12. Open questions that need the hardware
 
