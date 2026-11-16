@@ -58,6 +58,7 @@ func historyJSON(_ report: BayReport) -> [String: Any] {
     result["finding"] = report.headline
     result["advice"] = report.advice
     result["enclosureSuspected"] = report.enclosureSuspected
+    result["sharedModel"] = report.sharedModel
     return result
 }
 

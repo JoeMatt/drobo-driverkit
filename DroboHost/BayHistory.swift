@@ -65,6 +65,8 @@ struct BayReport {
     var headline = ""
     var advice = ""
     var enclosureSuspected = false
+    /// Set when every flagged bay holds this one model and no healthy bay does.
+    var sharedModel = ""
 }
 
 struct BayHistoryFile: Codable {
@@ -298,6 +300,16 @@ final class BayHistory: ObservableObject {
         } else if troubled.count >= 2 {
             report.headline = "\(bayList(troubled.map(\.bay))) are flagged"
             report.advice = "Several bays at once can be the enclosure rather than the drives. Whether they recover after a restart will tell: if they do, suspect the power supply or backplane."
+        }
+        // Flagged bays that all hold the same drive model, when the healthy bays hold others:
+        // the model is then as good a suspect as the enclosure.
+        let models = Set(troubled.map { $0.model.trimmingCharacters(in: .whitespaces) })
+        if troubled.count >= 2, models.count == 1, let model = models.first, !model.isEmpty {
+            let others = report.bays.filter { $0.episodes.isEmpty && $0.verdict != .empty }
+            if !others.contains(where: { $0.model.trimmingCharacters(in: .whitespaces) == model }) {
+                report.sharedModel = model
+                report.advice += " All of the flagged bays hold the same model (\(model)) and no healthy bay does. A model the Drobo does not get on with, for example a shingled (SMR) drive that stalls during a rebuild, fits this as well as an enclosure fault does."
+            }
         }
         return report
     }
