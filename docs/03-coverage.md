@@ -72,9 +72,9 @@ protocol reference are marked as needing that analysis.
 | Firmware update | drobo-utils documents it for older units | not implemented, by decision | no |
 | Reset / erase the Drobo | unknown | not implemented, by decision | no |
 | Diagnostics download | drobo-utils `GetDiagRecord` | not implemented | no |
-| Per-drive error counters and disk pack state (firmware shell: `state error`, `state dpm`) | vendor `EA` operation `0A` (protocol notes 11.22 to 11.25) | Drives tab, Drive tools; `drobo console` reads the answer back | **unsupported**: verified on hardware (driver 0.30.1) that the 8D turns down the command text at once (SRB response 4). Its firmware accepts shell commands only in the VxWorks ED&R lab/debug state, which a deployed unit is not in and which no host-side change can set (11.24, 11.25). Not in Dashboard's UI: a support hook |
-| S.M.A.R.T. attributes (firmware shell: `SmartStatus`) | same | Drive tools, asks first | **unsupported**: refused the same way (11.25). The per-drive temperature, error count and life remaining of page `35` are the S.M.A.R.T. data the Drobo does give out, and that path works |
-| Power-cycle a bay, wipe a drive's Drobo header, expunge a drive (firmware shell) | same | Drive tools: typed confirmation, and the driver refuses unless the Drobo's own status allows it for that bay | **unsupported**: refused the same way (11.25), so none has ever reached the shell. Added at the maintainer's request |
+| Per-drive error counters and disk pack state (firmware shell: `state error`, `state dpm`) | vendor `EA` operation `0A` (protocol notes 11.22 to 11.25) | removed from the app (driver v0.30.1 shell plumbing kept, inert) | **unsupported**: verified on hardware (driver 0.30.1) that the 8D turns down the command text at once (SRB response 4). Its firmware accepts shell commands only in the VxWorks ED&R lab/debug state, which a deployed unit is not in and which no host-side change can set (11.24, 11.25). Not in Dashboard's UI: a support hook |
+| S.M.A.R.T. attributes (firmware shell: `SmartStatus`) | same | removed from the app | **unsupported**: refused the same way (11.25). The per-drive temperature, error count and life remaining of page `35` are the S.M.A.R.T. data the Drobo does give out, and that path works |
+| Power-cycle a bay, wipe a drive's Drobo header, expunge a drive (firmware shell) | same | removed from the app | **unsupported**: refused the same way (11.25), so none has ever reached the shell. Added at the maintainer's request |
 | SSD cache ("Accelerator Bay") management | unknown | shown as a bay only | no: needs Dashboard analysis |
 | Automatic updates | n/a | update check only (see README) | partial |
 
@@ -88,7 +88,8 @@ protocol reference are marked as needing that analysis.
 - Anything "unsupported" is not a gap to close in this project: the code is written and
   correct, but the firmware refuses it on a stock unit. The firmware-shell Drive tools are the
   only such rows; see protocol notes 11.25 for why (the VxWorks ED&R lab/debug state) and why
-  no safe host-side change enables them.
+  no safe host-side change enables them. The app's Drive tools UI and the `drobo console`
+  command were removed in v0.30.1; the driver keeps the shell plumbing but nothing drives it.
 
 ## Dashboard data: what the driver already publishes
 

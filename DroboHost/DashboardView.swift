@@ -628,14 +628,13 @@ struct ContentView: View {
             commandLineCard
             diagnosticsCard
             troubleshootingCard
-            if troubleshooting { DriveToolsCard(model: dashboard) }
         }
     }
 
     private var troubleshootingCard: some View {
         Bezel(title: "Troubleshooting") {
             HStack(spacing: 12) {
-                Text("Shows the driver's request counts and timing, and Drive tools: questions put straight to the Drobo's firmware about its drives, and commands for a single bay. Not needed day to day.")
+                Text("Shows the driver's request counts and timing. Not needed day to day.")
                     .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()

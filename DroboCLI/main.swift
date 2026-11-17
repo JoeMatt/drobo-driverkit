@@ -23,8 +23,6 @@ commands
   log                    the Drobo's own event log, as last read in the app (Events tab, Read from Drobo)
                          --summary: what it adds up to (power losses, rebuilds, each bay's drive and problems)
                          --problems: warnings and notable events only; --bay <1-8|ssd>: one bay's events
-  console                what the Drobo's firmware printed for the last Drive tools command run in the app
-                         (error counters, pack state, S.M.A.R.T.); this only reads it back, it sends nothing
   history                each bay over the last 14 days: flagged, recovered, restarts, and what the pattern suggests
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
@@ -631,36 +629,6 @@ func run() -> Int32 {
                 let mark = entry.severity >= 2 ? "!" : (entry.severity == 1 ? "*" : " ")
                 print("\(entry.stamp)  \(mark) \(entry.text)")
             }
-        }
-        return 0
-    case "console":
-        // Run from the app (Drives tab, Drive tools); this only copies the text out of the driver.
-        let snapshot = state.snapshot
-        guard snapshot.shellAvailable else {
-            FileHandle.standardError.write(Data("the running driver has no Drive tools (needs 0.30.0)\n".utf8))
-            return 3
-        }
-        guard snapshot.shellState == 2, let text = DroboMonitor.shellOutput(length: snapshot.shellLength) else {
-            let reason = snapshot.shellState == 1 ? "a command is still running"
-                       : snapshot.shellState == 3 ? "the last command failed or was not answered"
-                       : "no command has been run since the driver started, or it printed nothing"
-            if json, snapshot.shellState == 3 {
-                // Which request failed and how (driver 0.30.1; zeros from an older driver).
-                printJSON(["failed": true, "step": snapshot.shellStep, "srb": snapshot.shellSRB,
-                           "scsiStatus": snapshot.shellSCSIStatus, "transferred": snapshot.shellTransferred,
-                           "elapsedMS": snapshot.shellElapsedMS, "reason": snapshot.shellFailure])
-                return 1
-            }
-            let detail = snapshot.shellFailure.isEmpty ? "" : ": " + snapshot.shellFailure
-            FileHandle.standardError.write(Data((reason + detail + "\n").utf8))
-            return 1
-        }
-        let known = DroboShellCommand.all.first { Int($0.id) == snapshot.shellCommand }
-        if json {
-            printJSON(["command": known?.text.replacingOccurrences(of: "<slot>", with: "\(snapshot.shellSlot)") ?? "",
-                       "truncated": snapshot.shellTruncated, "output": text])
-        } else {
-            print(text)
         }
         return 0
     case "history":

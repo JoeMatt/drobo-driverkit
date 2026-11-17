@@ -246,17 +246,6 @@ final class DashboardModel: ObservableObject {
     private var droboLogLoadedLength = -1
     private var droboLogAutomatic = false
     private var droboLogLastCheck = Date()
-    /// Output of the shell command run last (Drives tab, Drive tools), as the Drobo printed it.
-    @Published var shellOutput = ""
-    @Published var shellTitle = ""
-    @Published var shellStatus = ""
-    /// True once the Drobo has answered a shell command with text. The per-bay commands wait
-    /// for this: the answer to "Error counters" shows the firmware's slot numbers, which is the
-    /// one chance to check them against the bays before a command names a slot.
-    @Published var shellAnswered = false
-    private var shellRequested = false
-    private var shellLoaded = false
-
     /// Re-read the Drobo's log every hour and alert on new warnings. Off until a read has worked.
     static let logAutoKey = "droboLogAutoCheck"
     /// Set once the Drobo has returned a log this app could read.
@@ -414,7 +403,6 @@ final class DashboardModel: ObservableObject {
         }
         checkDroboLog(latest, now: now)
         syncDroboLog(latest)
-        syncShell(latest)
         syncExtended(latest)
         // Keep icons this app set earlier in step with how full each volume is.
         let writableVolumes = volumes.filter { volume in luns.contains { $0.id == volume.lun && $0.writable } }.map(\.id)
@@ -507,62 +495,6 @@ final class DashboardModel: ObservableObject {
             droboLogRequested = true
             droboLogStatus = "Reading…"
         }
-    }
-
-    /// Runs one command of the Drobo's shell through the driver (protocol notes 11.22). The view
-    /// has already asked the user; the driver checks guarded commands again on its own.
-    func runShell(_ command: DroboShellCommand, slot: Int = 0, confirmed: Bool) {
-        guard Demo.scenario == nil else {
-            shellStatus = "Demo mode: nothing is sent."
-            return
-        }
-        guard snapshot.shellAvailable else {
-            shellStatus = "Drive tools need driver 0.30.0 or later. Press Activate on the Advanced tab first."
-            return
-        }
-        guard snapshot.healthAvailable else {
-            shellStatus = "The Drobo is not answering status requests yet."
-            return
-        }
-        if let refusal = command.refusal(slot: slot, snapshot: snapshot) {
-            shellStatus = refusal
-            return
-        }
-        let label = command.needsBay ? "\(command.title), \(DroboLog.bayName(slot))" : command.title
-        if let error = DroboMonitor.send(.shell, argument: command.argument(slot: slot, confirmed: confirmed)) {
-            shellStatus = error
-            return
-        }
-        shellRequested = true
-        shellTitle = label
-        shellOutput = ""
-        shellStatus = "Running…"
-        if command.changesThePack {
-            events.add(.warning, "Sent to the Drobo: \(label)", "Command \"\(command.text.replacingOccurrences(of: "<slot>", with: "\(slot)"))\" from Drive tools.")
-        }
-    }
-
-    private func syncShell(_ latest: DroboSnapshot) {
-        if shellRequested, latest.shellState == 3 {
-            shellRequested = false
-            // Driver 0.30.1 says which request failed and how; older drivers only that one did.
-            shellStatus = latest.shellFailure.isEmpty
-                ? "Not completed: the Drobo did not answer or refused the command, or the driver dropped it before sending because the bay's state had changed. If the Drobo did not answer, status updates pause for two minutes."
-                : "Not completed. " + latest.shellFailure + (latest.shellSRB == 0xFFFF_FFFF ? " Status updates pause for two minutes." : "")
-            return
-        }
-        // Also picks up output the driver already holds when the app starts.
-        guard latest.shellState == 2, shellRequested || !shellLoaded else { return }
-        shellRequested = false
-        shellLoaded = true
-        if shellTitle.isEmpty, let known = DroboShellCommand.all.first(where: { Int($0.id) == latest.shellCommand }) {
-            shellTitle = known.needsBay ? "\(known.title), \(DroboLog.bayName(latest.shellSlot))" : known.title
-        }
-        shellOutput = DroboMonitor.shellOutput(length: latest.shellLength) ?? ""
-        if !shellOutput.isEmpty { shellAnswered = true }
-        shellStatus = shellOutput.isEmpty
-            ? "The Drobo ran the command and printed nothing."
-            : "Answered \(Date().formatted(date: .omitted, time: .shortened))" + (latest.shellTruncated ? "; the output was longer than the driver keeps and is cut short" : "")
     }
 
     /// The hourly automatic read, when it is switched on and a read has worked before.
