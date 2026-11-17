@@ -992,6 +992,29 @@ From `DDService64d`, by disassembly only. **None of these has been sent to a Dro
 - No request in either binary is named for clearing a failed drive, retrying a drive, or
   reading S.M.A.R.T. data or self-test results.
 
+### 11.20 Volume create, delete and resize in Dashboard (2026-11-17)
+
+From `DDService64d`, by disassembly only. **None of these has been sent to a Drobo, and this
+project does not send them.** The direct-attached path is `ESABlockDevice`; `ESAMPDevice` is
+the iSCSI one and builds the same requests.
+
+All four are system operations in the data-out form this driver already uses for LED dimming,
+`EA 10 00 <operation> <sequence> 00 21 <length16> 00` (data-in for the read: `EA 10 80 ...`).
+
+| What | Operation | Data | Where |
+|---|---|---|---|
+| Delete a volume | `0x13` | 4 bytes out: u16 BE unique volume ID, u8 unit number (`FF` when Dashboard could not find the volume in its list), `00` | `ESABlockDevice::DeleteUniqueLUN` @ `0x100064008` |
+| Create a volume | `0x12` | 12 bytes out: u64 BE size (the request's `Size`, unit not confirmed, bytes **[inf]**), u8 flags (the request's `Flags`), `00`, u16 BE unique volume ID | `ESABlockDevice::CreateLUN` @ `0x10006654e` |
+| Next free unique volume ID | `0x20` | 2 bytes in: u16 BE | `ESASCSISession::getNextUniqueLUNID` @ `0x1000a901a` |
+| Resize | `0x0F` | 4 bytes out: u32 BE, meaning not decoded | `ESASCSISession::resizeLUNS` @ `0x1000a7f78` |
+
+- Delete is keyed by the **unique volume ID**, not the unit number macOS shows. Dashboard finds
+  the volume object whose ID matches, unmounts it first (up to five tries, two seconds apart)
+  and sends the delete even if unmounting failed.
+- Where the unique ID is in the status pages this project already reads has not been matched
+  up yet (`ESALUNInfo2Struct`, the object field at `+0x6a`).
+- The Drobo's own log records a delete as event 500 and the space coming back as 501.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
