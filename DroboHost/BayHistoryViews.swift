@@ -5,14 +5,23 @@ import SwiftUI
 struct BayHistoryCard: View {
     @ObservedObject var history: BayHistory
     @State private var confirmClear = false
+    /// Closed, the card shows only what the history adds up to; the per-bay timelines open on request.
+    @AppStorage("driveHistoryExpanded") private var expanded = false
 
     var body: some View {
         let now = Date()
         let report = BayHistory.analyze(history.file, now: now)
         return Bezel(title: "Drive history") {
-            Button("Clear") { confirmClear = true }
-                .buttonStyle(PillButtonStyle(icon: "trash", compact: true))
-                .disabled(history.file.changes.isEmpty)
+            if expanded {
+                Button("Clear") { confirmClear = true }
+                    .buttonStyle(PillButtonStyle(icon: "trash", compact: true))
+                    .disabled(history.file.changes.isEmpty)
+            }
+            if !report.bays.isEmpty {
+                Button(expanded ? "Hide Bays" : "Show Bays") { withAnimation(Theme.spring) { expanded.toggle() } }
+                    .buttonStyle(PillButtonStyle(icon: expanded ? "chevron.up" : "chevron.down", compact: true))
+                    .help("Each bay's timeline over the last two weeks")
+            }
         } content: {
             if report.bays.isEmpty {
                 Text("Nothing recorded yet. Each bay's status is recorded while this app or its menu bar item is running, and kept across restarts, so a drive that is flagged and then comes back can be told apart from one that stays failed.")
@@ -22,11 +31,16 @@ struct BayHistoryCard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if !report.headline.isEmpty { finding(report) }
                     if !report.heatNote.isEmpty { heat(report) }
-                    ForEach(report.bays) { row($0, report: report, now: now) }
-                    if !report.enclosureTemperatures.isEmpty { enclosure(report, now: now) }
-                    Text(footer(report))
-                        .font(Theme.text(11)).foregroundStyle(Theme.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if expanded {
+                        ForEach(report.bays) { row($0, report: report, now: now) }
+                        if !report.enclosureTemperatures.isEmpty { enclosure(report, now: now) }
+                        Text(footer(report))
+                            .font(Theme.text(11)).foregroundStyle(Theme.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if report.headline.isEmpty && report.heatNote.isEmpty {
+                        Text("No pattern of drive problems in the last \(Int(report.window / 86_400)) days.")
+                            .font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
+                    }
                 }
             }
         }

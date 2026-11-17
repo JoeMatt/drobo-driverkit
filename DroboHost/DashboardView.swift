@@ -30,6 +30,9 @@ struct ContentView: View {
         return Tab(rawValue: name.capitalized) ?? .summary
     }()
     @AppStorage(DashboardModel.extendedKey) private var readDriveDetails = false
+    /// Request counters and timing, and the firmware queries: for chasing a problem, not for
+    /// everyday use, so they stay out of sight until asked for.
+    @AppStorage("showTroubleshooting") private var troubleshooting = false
     @State private var showRename = false
     @State private var newName = ""
     @State private var confirmShutdown = false
@@ -433,13 +436,10 @@ struct ContentView: View {
     // MARK: Drives
 
     private var drivesTab: some View {
-        // The history moves above the bays when it has something to say.
-        let finding = !BayHistory.analyze(dashboard.bays.file).headline.isEmpty
-        return VStack(spacing: 14) {
-            if finding { BayHistoryCard(history: dashboard.bays) }
+        // The bays first; the history under them shows its conclusion and opens for the detail.
+        VStack(spacing: 14) {
             drivesCard
-            if !finding { BayHistoryCard(history: dashboard.bays) }
-            DriveToolsCard(model: dashboard)
+            BayHistoryCard(history: dashboard.bays)
         }
     }
 
@@ -482,17 +482,20 @@ struct ContentView: View {
                 }
                 HStack(spacing: 14) {
                     if !slot.interface.isEmpty { fact("Interface", slot.interface) }
+                    if slot.isSolidState { fact("Type", "SSD") } else if let rpm = slot.rpm { fact("Speed", "\(rpm) rpm") }
                     if slot.managedBytes > 0 { fact("Managed by Drobo", DashboardModel.bytes(slot.managedBytes)) }
                 }
                 if slot.errorCount != nil || !slot.serial.isEmpty {
                     HStack(spacing: 14) {
-                        if slot.isSolidState { fact("Type", "SSD") } else if let rpm = slot.rpm { fact("Speed", "\(rpm) rpm") }
                         if let life = slot.lifeRemaining { fact("Life left", "\(life)%", tint: life < 20 ? Theme.amber : nil) }
-                        if let state = slot.diskStateText, let code = slot.diskStateCode {
-                            fact("State", state, tint: code >= 3 ? Theme.coral : (code >= 1 ? Theme.amber : nil))
+                        // The pill above already says "Healthy"; the Drobo's verdict is worth a
+                        // line only when it is something else.
+                        if let state = slot.diskStateText, let code = slot.diskStateCode, code != 0 {
+                            fact("State", state, tint: code >= 3 ? Theme.coral : Theme.amber)
                         }
                         if let errors = slot.errorCount { fact("Errors", "\(errors)", tint: errors > 0 ? Theme.amber : nil) }
-                        fact("Temp", slot.temperature.map { "\($0) °C" } ?? "not reported")
+                        // Not every model reports drive temperatures (the 8D does not).
+                        if let temperature = slot.temperature { fact("Temp", "\(temperature) °C") }
                     }
                     HStack(spacing: 14) {
                         if !slot.firmwareRevision.isEmpty { fact("Firmware", slot.firmwareRevision) }
@@ -618,13 +621,29 @@ struct ContentView: View {
             tools
             HStack(alignment: .top, spacing: 10) {
                 driverCard
-                latency.frame(width: 360)
+                if troubleshooting { latency.frame(width: 360) }
             }
             .fixedSize(horizontal: false, vertical: true)
             driveDetailsCard
             commandLineCard
             diagnosticsCard
+            troubleshootingCard
+            if troubleshooting { DriveToolsCard(model: dashboard) }
         }
+    }
+
+    private var troubleshootingCard: some View {
+        Bezel(title: "Troubleshooting") {
+            HStack(spacing: 12) {
+                Text("Shows the driver's request counts and timing, and Drive tools: questions put straight to the Drobo's firmware about its drives, and commands for a single bay. Not needed day to day.")
+                    .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Toggle("Show troubleshooting tools", isOn: $troubleshooting)
+                    .toggleStyle(.switch).labelsHidden().tint(Theme.emerald)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Opt-in for the status pages the driver does not read by default.
@@ -721,9 +740,11 @@ struct ContentView: View {
                         rate("arrow.down", dashboard.readRate, Theme.emerald)
                         rate("arrow.up", dashboard.writeRate, Theme.ice)
                     }
-                    Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.flushes) flushes · \(snapshot.errors) errors")
-                        .font(Theme.mono(10.5))
-                        .foregroundStyle(snapshot.errors > 0 ? Theme.coral : Theme.tertiary)
+                    if troubleshooting || snapshot.errors > 0 {
+                        Text("\(snapshot.reads) reads · \(snapshot.writes) writes · \(snapshot.flushes) flushes · \(snapshot.errors) errors")
+                            .font(Theme.mono(10.5))
+                            .foregroundStyle(snapshot.errors > 0 ? Theme.coral : Theme.tertiary)
+                    }
                 } else {
                     Text("Not running").font(Theme.text(12.5)).foregroundStyle(Theme.secondary)
                 }

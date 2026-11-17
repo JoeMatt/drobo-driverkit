@@ -207,7 +207,6 @@ enum DroboLog {
     Tue Nov 10 03:03:00 2026: 100:VERSION="1.2.3"
     Fri Nov 13 21:30:44 2026: 671:
     Fri Nov 13 21:31:00 2026: 125:UPTIME="3Days:18Hours",FREE_SPACE="14.20TiB",FREE_PERC="65.74",USED_SPACE="7.40TiB",USED_PERC="34.26"
-    Sat Nov 14 11:05:09 2026: 9999:FOO="bar"
 
     """
 }
