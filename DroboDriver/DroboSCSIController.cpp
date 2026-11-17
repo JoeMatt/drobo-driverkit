@@ -24,7 +24,9 @@
 //      `state list` (print firmware state), `SmartStatus`, `SmartStatus 2` (the Drobo reads
 //      SMART from each ready drive), and three that change the disk pack and are refused
 //      unless ShellPermitted agrees: `SlotPowerCycle <slot>`, `wipeDisk <slot>`,
-//      `expungeDisk <slot>`. None of these has been run on a Drobo yet.
+//      `expungeDisk <slot>`. `state error verbose` was sent once (v0.30.0) and the Drobo
+//      answered SRB response 4 with no data; no other entry has been sent (protocol notes
+//      11.24). v0.30.1 sends nothing new: it records which request of a command failed.
 //  What it never does:
 //    - send a write of any kind. WRITE/UNMAP/FORMAT etc. are rejected in the driver with
 //      DATA PROTECT, and MODE SENSE reports the medium as write-protected;
@@ -94,7 +96,7 @@ static const uint32_t kLogCopyMax      = 4096;      // bytes handed to the app p
 static const uint32_t kLogHoldMS       = 120000;    // pause after a log read goes unanswered: a 32 KiB answer can be slow
 static const uint32_t kHealthHoldMS       = 30000;  // pause after an optional page times out
 // The firmware's command shell (system operation 0x0A, protocol notes 11.22).
-static const uint32_t kShellChunk      = 0x800;     // what Drobo Dashboard asks for per read
+static const uint32_t kShellChunk      = kDroboShellChunk;   // what Drobo Dashboard asks for per read
 static const uint32_t kShellMax        = 256 * 1024; // output kept for the app
 static const uint32_t kShellMaxChunks  = 2048;      // 4 MiB: reads go on past kShellMax so the Drobo's
                                                     // output is drained, but not for ever
@@ -302,6 +304,13 @@ struct DroboSCSIController_IVars
     uint32_t                   shellCommand;        // identifier of the command run last
     uint32_t                   shellSlot;
     uint32_t                   shellLastSRB;
+    // Which of a command's requests was answered last, and how (protocol notes 11.24). When a
+    // command fails these say whether the Drobo turned down the text or a read, and how long
+    // it took to do so: its shell is given 30 s to answer a read.
+    uint32_t                   shellLastStep;       // 0 nothing sent, 1 the command text, 2 a read of the output
+    uint32_t                   shellLastSCSI;       // SCSI status of that request
+    uint32_t                   shellLastMoved;      // bytes the Drobo says it transferred
+    uint32_t                   shellLastMS;         // how long the Drobo took to answer it
     bool                       shellReading;        // false while the command text is being sent
     uint32_t                   shellKind;           // kind of the command in flight (kShell...)
     // When the slot page and the status page were last read (0: not since the last per-bay
@@ -632,6 +641,10 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     DictSetNumber(status, "ShellSlot", iv->shellSlot);
     DictSetNumber(status, "ShellChunks", iv->shellChunks);
     DictSetNumber(status, "ShellSRB", iv->shellLastSRB);
+    DictSetNumber(status, "ShellStep", iv->shellLastStep);
+    DictSetNumber(status, "ShellSCSIStatus", iv->shellLastSCSI);
+    DictSetNumber(status, "ShellTransferred", iv->shellLastMoved);
+    DictSetNumber(status, "ShellElapsedMS", iv->shellLastMS);
     status->setObject("ShellTruncated", iv->shellTruncated ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "EventLogState", (iv->logVA == nullptr || iv->logText == nullptr) ? 4 : iv->logState);
     DictSetNumber(status, "EventLogLength", iv->logState == 2 ? iv->logLength : 0);
@@ -1317,18 +1330,10 @@ enum : uint32_t {
 static void
 PrepareShellRead(DroboSCSIController_IVars * iv)
 {
-    bzero(iv->commandCDB, sizeof(iv->commandCDB));
-    iv->commandCDB[0] = 0xEA;
-    iv->commandCDB[1] = 0x10;
-    iv->commandCDB[2] = 0x80;
-    iv->commandCDB[3] = 0x0A;
-    iv->commandCDB[4] = iv->commandSequence;
-    iv->commandCDB[6] = iv->shellChunks == 0 ? 0x20 : 0x00;
-    iv->commandCDB[7] = (uint8_t) (kShellChunk >> 8);
-    iv->commandCDB[8] = (uint8_t) kShellChunk;
+    DroboShellReadCDB(iv->commandCDB, iv->commandSequence, iv->shellChunks == 0);
     iv->commandDataOut   = false;
     iv->commandLength    = kShellChunk;
-    iv->commandOperation = 0x0A;
+    iv->commandOperation = kDroboOperationShell;
     iv->shellReading     = true;
 }
 
@@ -1605,22 +1610,20 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     }
                 }
                 // EA 10 00 0A <sequence> 00 20 <length16> 00, the text data-out (11.22).
-                iv->commandCDB[0] = 0xEA;
-                iv->commandCDB[1] = 0x10;
-                iv->commandCDB[3] = 0x0A;
-                iv->commandCDB[4] = ++iv->commandSequence;
-                iv->commandCDB[6] = 0x20;
-                iv->commandCDB[7] = (uint8_t) (length >> 8);
-                iv->commandCDB[8] = (uint8_t) length;
+                DroboShellCommandCDB(iv->commandCDB, ++iv->commandSequence, (uint16_t) length);
                 iv->commandDataOut   = true;
                 iv->commandLength    = length;
-                iv->commandOperation = 0x0A;
+                iv->commandOperation = kDroboOperationShell;
                 iv->shellReading   = false;
                 iv->shellKind      = chosen->kind;
                 iv->shellLength    = 0;
                 iv->shellChunks    = 0;
                 iv->shellTruncated = false;
                 iv->shellLastSRB   = 0;
+                iv->shellLastStep  = 0;
+                iv->shellLastSCSI  = 0;
+                iv->shellLastMoved = 0;
+                iv->shellLastMS    = 0;
                 iv->shellCommand   = identifier;
                 iv->shellSlot      = chosen->kind >= kShellPowerCycle ? slot : 0;
                 iv->shellState     = 1;
@@ -2652,6 +2655,14 @@ DroboSCSIController::HealthResponse()
                         (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort);
         bool more = false;
         iv->shellLastSRB = srbResponse;
+        // Kept for the request answered last, so that a failure can be told apart: the text
+        // turned down, a read turned down at once, or a read given up after the 30 s the
+        // firmware allows its shell (protocol notes 11.24).
+        iv->shellLastStep  = iv->shellReading ? 2 : 1;
+        iv->shellLastSCSI  = scsiStatus;
+        iv->shellLastMoved = transferred > 0xFFFFFFFFull ? 0xFFFFFFFF : (uint32_t) transferred;
+        iv->shellLastMS    = iv->ticksPerMillisecond == 0 ? 0
+                           : (uint32_t) ((mach_absolute_time() - iv->tmSubmitTime) / iv->ticksPerMillisecond);
         if (ok && !iv->shellReading) {
             more = true;                            // the Drobo took the command: read what it prints
         } else if (ok) {
@@ -2794,6 +2805,8 @@ IMPL(DroboSCSIController, HandleHealthTimer)
             iv->commandOperation = 0;
             iv->shellState = 3;
             iv->shellLastSRB = 0xFFFFFFFF;
+            iv->shellLastStep = iv->shellReading ? 2 : 1;
+            iv->shellLastMS = (uint32_t) patience;
             iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
             PublishStatus(this, iv);
         } else if (optional) {

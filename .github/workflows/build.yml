@@ -20,6 +20,13 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i driverkit
 
+      # The driver's firmware-shell requests, printed and compared with protocol notes 11.22.
+      # Runs on the build machine only; nothing is sent to a Drobo.
+      - name: Shell request bytes match the protocol notes
+        run: |
+          xcrun clang++ -std=gnu++17 -Wall -Werror -o "$RUNNER_TEMP/shell_request_bytes" tests/shell_request_bytes.cpp
+          "$RUNNER_TEMP/shell_request_bytes"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

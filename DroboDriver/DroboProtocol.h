@@ -248,4 +248,50 @@ struct DroboPassthroughRequest {         // "TransportManagerSrbExtension" minus
 };
 _Static_assert(sizeof(DroboPassthroughRequest) == 0x58, "passthrough request layout");
 
+// MARK: The firmware shell (system operation 0x0A, protocol notes 11.22 and 11.24)
+//
+// The two requests of one shell command, byte for byte as Drobo Dashboard 3.6.1 builds them
+// (ESASCSISession::runEsaCommand @ 0x1000a8bcc, which calls ESASystemOperationRequest's
+// constructor with the three byte-6 flags 0, 1, 0 for the text and 0, first, 0 for a read).
+// Byte 6 is 0x20 here, not the 0x21 of blink, standby and the dim level: checked again in
+// 11.24, where it is also shown that the 8D's firmware does not read byte 6 for this
+// operation. tests/shell_request_bytes.cpp prints these and compares them with the notes.
+
+static const uint8_t  kDroboOperationShell = 0x0A;
+static const uint32_t kDroboShellChunk     = 0x800;     // what Dashboard asks for per read
+
+// The command text, data-out:  EA 10 00 0A <sequence> 00 20 <length16, big-endian> 00
+static inline void
+DroboShellCommandCDB(uint8_t cdb[16], uint8_t sequence, uint16_t textLength)
+{
+    for (int i = 0; i < 16; i++) {
+        cdb[i] = 0;
+    }
+    cdb[0] = 0xEA;
+    cdb[1] = 0x10;
+    cdb[3] = kDroboOperationShell;
+    cdb[4] = sequence;
+    cdb[6] = 0x20;
+    cdb[7] = (uint8_t) (textLength >> 8);
+    cdb[8] = (uint8_t) textLength;
+}
+
+// One read of its output, data-in, with the sequence number the text went out with:
+//   EA 10 80 0A <sequence> 00 <20 on the first read, 00 after> 08 00 00
+static inline void
+DroboShellReadCDB(uint8_t cdb[16], uint8_t sequence, bool first)
+{
+    for (int i = 0; i < 16; i++) {
+        cdb[i] = 0;
+    }
+    cdb[0] = 0xEA;
+    cdb[1] = 0x10;
+    cdb[2] = 0x80;
+    cdb[3] = kDroboOperationShell;
+    cdb[4] = sequence;
+    cdb[6] = first ? 0x20 : 0x00;
+    cdb[7] = (uint8_t) (kDroboShellChunk >> 8);
+    cdb[8] = (uint8_t) kDroboShellChunk;
+}
+
 #endif /* DroboProtocol_h */

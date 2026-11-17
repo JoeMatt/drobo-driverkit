@@ -545,7 +545,10 @@ final class DashboardModel: ObservableObject {
     private func syncShell(_ latest: DroboSnapshot) {
         if shellRequested, latest.shellState == 3 {
             shellRequested = false
-            shellStatus = "Not completed: the Drobo did not answer or refused the command, or the driver dropped it before sending because the bay's state had changed. If the Drobo did not answer, status updates pause for two minutes."
+            // Driver 0.30.1 says which request failed and how; older drivers only that one did.
+            shellStatus = latest.shellFailure.isEmpty
+                ? "Not completed: the Drobo did not answer or refused the command, or the driver dropped it before sending because the bay's state had changed. If the Drobo did not answer, status updates pause for two minutes."
+                : "Not completed. " + latest.shellFailure + (latest.shellSRB == 0xFFFF_FFFF ? " Status updates pause for two minutes." : "")
             return
         }
         // Also picks up output the driver already holds when the app starts.

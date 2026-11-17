@@ -7,8 +7,8 @@ settings:
   base:
     DEVELOPMENT_TEAM: S32Z3HMYVQ
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.30.0"
-    CURRENT_PROJECT_VERSION: "32"
+    MARKETING_VERSION: "0.30.1"
+    CURRENT_PROJECT_VERSION: "33"
 targets:
   DroboHost:
     type: application

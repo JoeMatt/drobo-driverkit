@@ -71,7 +71,7 @@ protocol reference are marked as needing that analysis.
 | Firmware update | drobo-utils documents it for older units | not implemented, by decision | no |
 | Reset / erase the Drobo | unknown | not implemented, by decision | no |
 | Diagnostics download | drobo-utils `GetDiagRecord` | not implemented | no |
-| Per-drive error counters and disk pack state (firmware shell: `state error`, `state dpm`) | vendor `EA` operation `0A` (protocol notes 11.22, 11.23) | Drives tab, Drive tools; `drobo console` reads the answer back | implemented, unverified. Not in Dashboard's UI: a support hook |
+| Per-drive error counters and disk pack state (firmware shell: `state error`, `state dpm`) | vendor `EA` operation `0A` (protocol notes 11.22, 11.23) | Drives tab, Drive tools; `drobo console` reads the answer back | implemented, **not working yet**: the one command sent (`state error verbose`, driver 0.30.0) was answered SRB response 4 with no data. The request bytes match Dashboard's; driver 0.30.1 records which request fails (protocol notes 11.24). Not in Dashboard's UI: a support hook |
 | S.M.A.R.T. attributes (firmware shell: `SmartStatus`) | same | Drive tools, asks first | implemented, unverified |
 | Power-cycle a bay, wipe a drive's Drobo header, expunge a drive (firmware shell) | same | Drive tools: typed confirmation, and the driver refuses unless the Drobo's own status allows it for that bay | implemented, unverified. Added at the maintainer's request |
 | SSD cache ("Accelerator Bay") management | unknown | shown as a bay only | no: needs Dashboard analysis |

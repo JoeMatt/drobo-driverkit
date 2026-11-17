@@ -644,7 +644,15 @@ func run() -> Int32 {
             let reason = snapshot.shellState == 1 ? "a command is still running"
                        : snapshot.shellState == 3 ? "the last command failed or was not answered"
                        : "no command has been run since the driver started, or it printed nothing"
-            FileHandle.standardError.write(Data((reason + "\n").utf8))
+            if json, snapshot.shellState == 3 {
+                // Which request failed and how (driver 0.30.1; zeros from an older driver).
+                printJSON(["failed": true, "step": snapshot.shellStep, "srb": snapshot.shellSRB,
+                           "scsiStatus": snapshot.shellSCSIStatus, "transferred": snapshot.shellTransferred,
+                           "elapsedMS": snapshot.shellElapsedMS, "reason": snapshot.shellFailure])
+                return 1
+            }
+            let detail = snapshot.shellFailure.isEmpty ? "" : ": " + snapshot.shellFailure
+            FileHandle.standardError.write(Data((reason + detail + "\n").utf8))
             return 1
         }
         let known = DroboShellCommand.all.first { Int($0.id) == snapshot.shellCommand }

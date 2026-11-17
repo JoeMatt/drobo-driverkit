@@ -263,6 +263,24 @@ struct DroboSnapshot {
     var shellCommand = 0
     var shellSlot = 0
     var shellTruncated = false
+    /// How the request of a shell command answered last went (driver 0.30.1; all zero before
+    /// that): which request it was (1 the command text, 2 a read of its output), the Drobo's
+    /// SRB response and SCSI status, the bytes it moved, and how long it took to answer.
+    var shellStep = 0
+    var shellSRB = 0
+    var shellSCSIStatus = 0
+    var shellTransferred = 0
+    var shellElapsedMS = 0
+    /// Why the last shell command failed, in words, from the fields above. Empty when the
+    /// driver does not report them.
+    var shellFailure: String {
+        guard shellState == 3 else { return "" }
+        if shellSRB == 0xFFFF_FFFE { return "The driver dropped the command before sending it: the bay's state had changed." }
+        guard shellStep != 0 else { return "" }
+        let request = shellStep == 1 ? "the command text" : "a read of the output"
+        if shellSRB == 0xFFFF_FFFF { return "The Drobo did not answer \(request) within \(shellElapsedMS / 1000) s." }
+        return "The Drobo turned down \(request) after \(shellElapsedMS) ms (SRB response \(shellSRB), SCSI status \(shellSCSIStatus), \(shellTransferred) bytes moved)."
+    }
     /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
     var dimLevel: Int?
 
@@ -352,6 +370,11 @@ enum DroboMonitor {
             snapshot.shellCommand = Int(number(status["ShellCommand"]))
             snapshot.shellSlot = Int(number(status["ShellSlot"]))
             snapshot.shellTruncated = status["ShellTruncated"] as? Bool ?? false
+            snapshot.shellStep = Int(number(status["ShellStep"]))
+            snapshot.shellSRB = Int(number(status["ShellSRB"]))
+            snapshot.shellSCSIStatus = Int(number(status["ShellSCSIStatus"]))
+            snapshot.shellTransferred = Int(number(status["ShellTransferred"]))
+            snapshot.shellElapsedMS = Int(number(status["ShellElapsedMS"]))
             snapshot.dimLevel = (status["DimLevel"] as? NSNumber)?.intValue
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false

@@ -1129,7 +1129,8 @@ question left open in 11.17.
 
 ### 11.23 The firmware shell in the driver (driver v0.30.0, 2026-11-17)
 
-**Not yet tried on a Drobo**: everything below is how it is built, not what was observed.
+Everything below is how it is built, not what was observed. The first command sent to a Drobo
+failed; see 11.24.
 
 - The driver sends a shell command only when the app asks (Drives tab, Drive tools), never on
   its own, and only a text from a fixed table in the driver (`kShellCommands`). The app picks
@@ -1178,6 +1179,105 @@ The two commands not covered in 11.22, from the firmware. **[obs]**
 
 Left out on purpose: whole-array commands (`cleardisk`, `formatFAT32`, `createGPT`), the
 deliberate crash commands, and `SMART-Test` (a stub on 4.2.3).
+
+### 11.24 First shell command on the 8D: SRB response 4 (driver v0.30.0, 2026-11-17)
+
+**Observed.** **[obs]** Drive tools, "Error counters, detailed" (`state error verbose`, table
+entry 2), driver v0.30.0, firmware 4.2.3. Afterwards `DroboStatus` held `ShellState` 3,
+`ShellSRB` 4, `ShellChunks` 0, `ShellLength` 0. The status pages kept answering (SRB response
+1) and the volumes stayed mounted. v0.30.0 keeps one SRB value for the whole command, so this
+does not say whether the Drobo turned down the command text or the first read of its output.
+No other shell command has been sent.
+
+**The request bytes were checked again and are not the cause.** Byte 6 was the suspect,
+because it is the one field that differs from the system operations that work (`20` here,
+`21` for blink and the dim level).
+
+- The driver's three requests equal the layout in 11.22: `tests/shell_request_bytes.cpp`
+  builds them with the functions the driver calls (`DroboShellCommandCDB`,
+  `DroboShellReadCDB` in `DroboProtocol.h`), prints them and compares. For this command:
+
+      EA 10 00 0A <seq> 00 20 00 13 00   + "state error verbose" (19 bytes), data-out
+      EA 10 80 0A <seq> 00 20 08 00 00   first read, data-in
+      EA 10 80 0A <seq> 00 00 08 00 00   later reads
+
+- 11.22 equals Dashboard. **[obs]** `ESASCSISession::runEsaCommand` @ `0x1000a8bcc` calls
+  `ESASystemOperationRequest`'s constructor @ `0x1000c56e4` with request type 1, operation
+  `0A`, the sequence number, the three flags false, true, false, the length, the text and a
+  zero for byte 9. The constructor sets byte 6 to `flag1 << 6 | flag2 << 5 | flag3` and byte 2
+  to `80` only for request type 0. The length is the string's length
+  (`ESADevice::runEsaCommand` @ `0x100079912`). The reads use type 0, flags false,
+  first-read, false, and length `0x800`.
+- **The firmware does not read byte 6 for this operation.** **[obs]** In the user-process
+  image, `HAManager::systemOperation`'s case `0A` reads CDB bytes 2 (direction), 7–8 (length)
+  and 9, and `DebugProxy::passData` reads bytes 7–8. Of the management handlers only
+  `GetUserEventLog` (operation `22`) reads byte 6 (@ `0x142d40`). In the kernel image,
+  `processESAManagementCommand` reads the opcode and byte 3 only. Sending `21` in place of
+  `20` would change nothing, so the driver keeps Dashboard's `20`.
+
+**Where SRB response 4 comes from.** **[obs]** unless marked. The firmware's kernel image (the
+first executable of the `.tdf`, linked at `0x1000000`) handles every passthrough request in
+`processESAManagementCommand` @ `0x1293e94`. It copies a data-out payload from the host,
+passes the request to the user process as three messages (a 44-byte command block, the
+16-byte CDB, the payload), waits for a 44-byte answer, and for data-in copies the reply back.
+Its reply is SRB response 1; `12` when a data-in moved a different count than was asked for;
+and, when its error flag is set, **zero bytes and SRB response 4** (`12` for a data-out over
+`0x8000` bytes or with no transfer buffer). The error flag is set when:
+
+1. the request's flags have neither direction bit (`0x10000`, `0x20000`);
+2. the copy of a data-out payload moves fewer bytes than asked ("Failed to transfer the SGL");
+3. one of the three messages cannot be queued;
+4. the user process answers with an error ("ERROR RETURN from HRM"), which is what a
+   non-zero status from `HAManager`'s handler becomes **[inf: the mapping in
+   `HRManager::putResponse` was not traced]**;
+5. for data-in, the follow-up message does not arrive, or the flags have neither buffer-mode
+   bit (`0x08`, `0x10`: "Unknown transfer type"), which is the SRB response 4 seen in 11.5.
+
+A data-out of 16 bytes or fewer only logs a warning, which is why blink's single byte goes
+through. In direct-buffer mode the address comes from the request's `+0x28` field and the
+length from the transfer length (`mvBuildIdmaDescriptorChain` @ `0x12a1580`), so the 19
+bytes of text are fetched the same way as blink's one byte.
+
+**What makes the `0A` handler itself return an error** (user-process image, case `0A` @
+`0x144350`). **[obs]**
+
+- The command text while an earlier command is still open: status 9 (11.22).
+- The two message queues cannot be opened (`DebugProxy::Init` @ `0x128a50`): status 14.
+- A blocked text (11.22): status 16.
+- A read when the shell hands over no output within **30 seconds** (the wait in
+  `DebugProxy::passData` @ `0x1310b0`, `DiagnosticsManager`'s default at `+0x0c`), or the
+  queue read fails: status 16. After an error on a read the firmware releases the command
+  (@ `0x147374`), so a failed command does not block the next one.
+- The shell task's own reply always carries status 0 (`DebugClass::RequestHandler` @
+  `0x165c8`, the store @ `0x17230`): an unknown command or a bad argument comes back as text,
+  not as an error. Two shell threads (`tDebug1`, `tDebug2`) are started unconditionally
+  (`DebugClass::Initialize` @ `0x1ea9c`), in and out of lab mode.
+
+On a Drobo with no command open the text is therefore expected to be accepted, which leaves
+the copy of the text failing (item 2 above), or the first read failing: at once, or after
+the 30 seconds if the shell did not answer (`state error` takes the Error Policy Manager's
+lock). **Which of these happened is not known.** **[inf]**
+
+**A rule for hosts.** **[obs]** A `0A` read (byte 2 = `80`) when no command is open is not
+refused. The firmware logs "unexpected passData when expect sendRequest (new esa cmd)" and
+then treats the request as a new command (@ `0x1483ac`, falling into `0x14709c`), taking the
+"text" from where a data-out payload would be. A host must never send a `0A` read except
+after the text was accepted, with the same sequence number, and must not send reads to
+"drain" a command it is unsure about. The driver sends reads only after an accepted text and
+stops at the first request that fails.
+
+**Driver v0.30.1** sends nothing new. It records, for the request of a shell command that
+was answered last: `ShellStep` (1 the command text, 2 a read), `ShellSCSIStatus`,
+`ShellTransferred` and `ShellElapsedMS`, next to `ShellSRB`. A request the Drobo never
+answers keeps `ShellSRB` `0xFFFFFFFF` and now also its step. The app shows these under Drive
+tools when a command fails, `drobo console` prints them, and `drobo console --json` returns
+them. **Not yet run on a Drobo.** How to read the next failure:
+
+| `ShellStep` | `ShellElapsedMS` | Meaning |
+|---|---|---|
+| 1 | any | The text was turned down: the copy from the host failed, or the Drobo has a command open |
+| 2 | about 30 000 | The text was accepted and the shell printed nothing in 30 s |
+| 2 | small | The text was accepted and the read failed at once |
 
 ## 12. Open questions that need the hardware
 
