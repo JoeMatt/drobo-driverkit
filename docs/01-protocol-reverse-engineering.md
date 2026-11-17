@@ -1275,8 +1275,8 @@ the answer. When it is false, the text is compared with `proc uboot` (10 bytes) 
 which reaches the host as SRB response 4 with no data after a few milliseconds. `state error
 verbose`, `state dpm`, `SmartStatus` and the per-bay commands are all refused this way, so
 **none of the Drive tools commands can work on a Drobo that is not in lab mode**, and this
-unit is not. What sets lab mode in the kernel was not traced. 11.22 had this check the wrong
-way round and is corrected.
+unit is not. What sets lab mode is traced in 11.25 (it is the VxWorks ED&R debug flag, not host-
+settable). 11.22 had this check the wrong way round and is corrected.
 
 So the first failure (v0.30.0) was the same refusal, and nothing a shell command would have
 done has happened on the Drobo: no command reached the shell. **[inf]**
@@ -1302,7 +1302,61 @@ them. This is what showed the refusal above. How to read a failure:
 | 2 | about 30 000 | The text was accepted and the shell printed nothing in 30 s |
 | 2 | small | The text was accepted and the read failed at once |
 
+### 11.25 What "lab mode" is: the firmware's VxWorks ED&R debug flag (2026-11-17)
+
+Static analysis of both firmware images; nothing was sent to the Drobo for this. **[obs]**
+unless marked. This answers the question 11.24 left open — what makes `InLabMode()` true —
+and settles whether Drive tools can ever work on a stock 8D.
+
+**Lab mode is the operating system's own debug state, not a Drobo setting.** The firmware
+runs VxWorks, and "lab mode" is VxWorks's ED&R (Error Detection and Reporting) **system debug
+flag**. The kernel's help text for it is VxWorks's own, word for word: "This command provides
+access to the system debug flag. This flag indicates whether the system is in 'debug' (also
+known as 'lab') mode, or in 'field' (or 'deployed') mode." The kernel logs "Setting ED&R
+state to Lab mode" and "Setting ED&R state to Deployed mode", and in lab mode "LABMODE - RTP
+suspended and available for debugging": when a user process crashes, the OS freezes it for a
+debugger instead of restarting it. A production unit ships in deployed (field) mode.
+
+**How the firmware reads it.**
+
+- `InLabMode()` in the user process (@ app `0x314084`) asks the kernel once, caches the
+  answer, and returns it. The query is VxWorks system call number `0x1A52`
+  (`syscall(..., 0x1A52)`); the kernel side is `getDebugMode` (@ kernel `0x107dce4`), next to
+  `setDebugMode` (@ `0x107dc88`), `getBoardDebugModeEnabled` and the ED&R fatal-policy suite
+  (`edrRtpFatalPolicyHandler`, `usrEdrInit`, ...). The ED&R state lives in a persistent memory
+  region (`edrShow` reads the same region's error log).
+- Case `0A` of `systemOperation` calls `InLabMode()` first (11.24). Deployed mode means every
+  shell command but `proc uboot` and `enableBrickOverride` is refused with "Host command not
+  allowed, not in Lab Mode" and status 16, which the host sees as SRB response 4.
+
+**It cannot be turned on from the host, and there is no reason to.** **[inf]** unless noted.
+
+- The host side is read-only: `InLabMode()` only reads, and the `labmode` text command in the
+  user process (`ReportLabMode` @ app `0x33b078`) only **displays** the flag and the build's
+  feature list ("LABMODE is ENABLED/DISABLED"). Neither sets it. **[obs]**
+- Setting ED&R mode is `setDebugMode` / VxWorks `edrSystemDebugModeSet`, a **kernel** routine.
+  The firmware exposes a kernel shell only on the board's serial console (the `uart16550`
+  driver is present), which this host protocol never reaches: the `0A` shell runs the
+  **user-process** command table, a different and lower-privileged shell. No management
+  request, and nothing in `DDService64d`, changes ED&R mode.
+- So enabling it would mean opening the enclosure, attaching to the board's UART, and putting
+  the live OS into a debug state where a crashed process hangs instead of recovering — the
+  opposite of what you want under an array with no redundancy. Not a path worth taking for
+  data rescue.
+
+**Conclusion.** The firmware-shell Drive tools (`state error`, `SmartStatus`, and the per-bay
+`SlotPowerCycle` / `wipeDisk` / `expungeDisk`) are usable only on an engineering unit left in
+ED&R lab mode. On Joe's 8D, and any retail 8D in deployed mode, they cannot work, and no safe
+host-side change makes them work. The SMART-ish data the Drobo does publish without the shell
+(per-drive temperature, error count, life remaining; slot page `35`, 11.9/11.12) is the
+most these commands could have added for drive health, and that path already works. Bumping or
+recovering a drive has no host route at all; a physical reseat is the only option.
+
 ## 12. Open questions that need the hardware
+
+0. ~~What puts the 8D in "lab mode" so the firmware shell accepts commands.~~ Answered in
+   11.25: it is the VxWorks ED&R system debug flag, set only from the board's serial console,
+   not from the host. The Drive tools cannot work on a deployed unit.
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
 2. ~~Interface Version.~~ Answered in 11.1: version 6.
