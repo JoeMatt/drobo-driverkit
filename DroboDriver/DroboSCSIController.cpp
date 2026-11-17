@@ -80,7 +80,7 @@ static const uint8_t  kHealthPages[kHealthPageCount] = {
 // if one goes unanswered they are all given up. Either way until the driver restarts.
 static const uint32_t kHealthFirstOptional = 9;
 static const uint32_t kLogChunk        = 0x8000;    // what Drobo Dashboard asks for per request
-static const uint32_t kLogMaxChunks    = 8;
+static const uint32_t kLogMaxChunks    = 64;        // 2 MiB; seven years of log on an 8D is past 500 KiB
 static const uint32_t kLogMax          = kLogChunk * kLogMaxChunks;
 static const uint32_t kLogCopyMax      = 4096;      // bytes handed to the app per call
 static const uint32_t kLogHoldMS       = 120000;    // pause after a log read goes unanswered: a 32 KiB answer can be slow
@@ -1245,7 +1245,13 @@ PrepareLogChunk(DroboSCSIController_IVars * iv)
     iv->commandCDB[1] = 0x10;
     iv->commandCDB[2] = 0x80;
     iv->commandCDB[3] = 0x22;
-    iv->commandCDB[4] = ++iv->commandSequence;
+    // One sequence number for the whole read, as Dashboard does (it takes the number once,
+    // before its loop). A new number on each chunk makes the Drobo start again from the oldest
+    // entry: seen on an 8D with v0.29.0, which returned the first 32 KiB eight times.
+    if (iv->logChunks == 0) {
+        ++iv->commandSequence;
+    }
+    iv->commandCDB[4] = iv->commandSequence;
     iv->commandCDB[6] = iv->logChunks == 0 ? 0x20 : 0x00;
     iv->commandCDB[7] = (uint8_t) (kLogChunk >> 8);
     iv->commandCDB[8] = (uint8_t) kLogChunk;

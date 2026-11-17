@@ -959,6 +959,18 @@ was observed.
 - The app's event descriptions are this project's wording for ids 100 to 671. The NAS-only ids
   (1500 and up) are shown as numbers.
 
+### 11.18 Event log read on the 8D (2026-11-17)
+
+First read on hardware, driver v0.29.0, firmware 4.2.3. **[obs]**
+
+- The request is answered: chunks come back full, as text in the format of 11.16.
+- v0.29.0 took a new sequence number for every chunk, and the 8D answered each one from the
+  oldest entry: eight identical 32 KiB chunks (October 2019 to March 2020). Dashboard reads the
+  session counter once, before its loop (`0x1000a843f`), and sends that same number with every
+  chunk. v0.29.1 does the same. **Not yet tried.**
+- The log is oldest first, about 32 KiB per five months on this unit, so a full log is well
+  past the old 256 KiB limit. The limit is now 64 chunks (2 MiB).
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
