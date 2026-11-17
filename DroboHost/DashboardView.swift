@@ -439,6 +439,7 @@ struct ContentView: View {
             if finding { BayHistoryCard(history: dashboard.bays) }
             drivesCard
             if !finding { BayHistoryCard(history: dashboard.bays) }
+            DriveToolsCard(model: dashboard)
         }
     }
 

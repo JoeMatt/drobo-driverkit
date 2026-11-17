@@ -89,6 +89,7 @@ drobo --watch 5             # redraw every 5 seconds
 drobo log                   # the Drobo's own event log, as last read in the app
 drobo log --summary         # what it adds up to: power losses, rebuilds, each bay's drive and problems
 drobo log --bay 6 --problems   # one bay's warnings
+drobo console               # what the firmware printed for the last Drive tools command run in the app
 drobo history               # each bay over 14 days, and what the pattern suggests
 drobo diagnostics > d.json  # raw driver state for a bug report, serial and name removed
 drobo metrics               # Prometheus text format, for Grafana-style monitoring

@@ -107,6 +107,82 @@ struct DroboLUN: Identifiable {
     var isMounted: Bool { !volumeNames.isEmpty }
 }
 
+/// One command of the Drobo's built-in shell (protocol notes 11.22). The driver holds the same
+/// table and sends only these texts: the app picks one by number and cannot supply text.
+/// **None of them has been run on a Drobo yet.**
+struct DroboShellCommand: Identifiable {
+    enum Kind {
+        /// Prints the firmware's own state. No drive is touched.
+        case readsMemory
+        /// The Drobo sends commands to each ready drive.
+        case touchesDrives
+        case powerCycle, wipe, expunge
+    }
+    /// Must match `kShellCommands` in the driver.
+    let id: UInt32
+    let title: String
+    /// What the Drobo is sent, with `<slot>` where the slot number goes.
+    let text: String
+    let kind: Kind
+    let detail: String
+
+    var needsBay: Bool { kind == .powerCycle || kind == .wipe || kind == .expunge }
+    var needsConfirmation: Bool { kind != .readsMemory }
+    var changesThePack: Bool { needsBay }
+
+    static let all: [DroboShellCommand] = [
+        .init(id: 1, title: "Error counters", text: "state error", kind: .readsMemory,
+              detail: "The limits at which the Drobo gives up on a drive, and each drive's error and timeout counts."),
+        .init(id: 2, title: "Error counters, detailed", text: "state error verbose", kind: .readsMemory,
+              detail: "The same with every recorded error."),
+        .init(id: 3, title: "Disk pack state", text: "state dpm", kind: .readsMemory,
+              detail: "Which drives the Drobo counts as members of the disk pack."),
+        .init(id: 5, title: "S.M.A.R.T. attributes", text: "SmartStatus", kind: .touchesDrives,
+              detail: "The Drobo reads the S.M.A.R.T. attributes of every drive that is ready. Drives it has given up on are probably skipped."),
+        .init(id: 6, title: "S.M.A.R.T. attributes, detailed", text: "SmartStatus 2", kind: .touchesDrives,
+              detail: "The same, with more detail."),
+        .init(id: 16, title: "Power-cycle bay", text: "SlotPowerCycle <slot>", kind: .powerCycle,
+              detail: "Switches the bay's power off and on again."),
+        .init(id: 17, title: "Wipe Drobo header", text: "wipeDisk <slot>", kind: .wipe,
+              detail: "Erases the Drobo's records on the drive so that it looks new. Whatever the drive held for this disk pack is gone."),
+        .init(id: 18, title: "Expunge drive", text: "expungeDisk <slot>", kind: .expunge,
+              detail: "Permanently removes the drive from the disk pack. The Drobo will refuse this drive from then on."),
+    ]
+
+    /// The driver's command argument: identifier, slot, and the value that marks a guarded
+    /// command as confirmed by the user.
+    func argument(slot: Int, confirmed: Bool) -> UInt32 {
+        id | UInt32(slot & 0xFF) << 8 | (confirmed ? UInt32(0xD0B0) << 16 : 0)
+    }
+
+    /// Why this command cannot be sent now, or nil. The driver makes the same checks
+    /// (`ShellPermitted`) from the same data and refuses on its own; this is for telling the
+    /// user why before they try.
+    func refusal(slot: Int, snapshot: DroboSnapshot) -> String? {
+        guard needsBay else { return nil }
+        guard slot >= 0, slot < 8 else { return "Only the eight drive bays; not the SSD bay." }
+        guard let bay = snapshot.slots.first(where: { $0.id == slot }), let flags = snapshot.statusFlags else {
+            return "The Drobo has not reported this bay's state yet."
+        }
+        guard !bay.isEmpty else { return "The bay is empty." }
+        let light = bay.statusCode & 0x0F
+        let failed = light == 1 || light == 6
+        // bad disk, too many missing, no redundancy, rebuilding, formatting
+        let atRest = flags & (0x0010 | 0x0020 | 0x0040 | 0x0200 | 0x0400) == 0
+        switch kind {
+        case .powerCycle:
+            return failed || atRest ? nil : "Only for a bay the Drobo already shows as failed, or while the array is fully protected and not rebuilding."
+        case .wipe:
+            return failed ? nil : "Only for a bay the Drobo already shows as failed. Wiping a working drive would lose its share of the data."
+        case .expunge:
+            if failed { return "The Drobo has already given up on this drive." }
+            return atRest ? nil : "Only while the array is fully protected and not rebuilding. Removing a drive now would lose data."
+        default:
+            return nil
+        }
+    }
+}
+
 /// Commands the driver accepts from the app (must match the driver's enum).
 enum DroboCommand: UInt32 {
     case setWritable = 1
@@ -119,6 +195,7 @@ enum DroboCommand: UInt32 {
     case setDim = 8
     case getDim = 9
     case readLog = 10
+    case shell = 11
 }
 
 /// The driver's own timing for one size class of block request.
@@ -177,6 +254,15 @@ struct DroboSnapshot {
     /// 0 never read, 1 reading, 2 read, 3 the Drobo did not return it, 4 the driver has no buffer for it.
     var eventLogState = 0
     var eventLogLength = 0
+    /// The driver can run commands of the Drobo's built-in shell (driver 0.30.0).
+    var shellAvailable: Bool { commandFormat >= 5 }
+    /// 0 never run, 1 running, 2 done, 3 the Drobo did not answer or refused.
+    var shellState = 0
+    var shellLength = 0
+    /// Identifier of the shell command run last (`DroboShellCommand.id`) and its slot.
+    var shellCommand = 0
+    var shellSlot = 0
+    var shellTruncated = false
     /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
     var dimLevel: Int?
 
@@ -261,6 +347,11 @@ enum DroboMonitor {
             snapshot.commandFormat = number(status["CommandFormat"])
             snapshot.eventLogState = Int(number(status["EventLogState"]))
             snapshot.eventLogLength = Int(number(status["EventLogLength"]))
+            snapshot.shellState = Int(number(status["ShellState"]))
+            snapshot.shellLength = Int(number(status["ShellLength"]))
+            snapshot.shellCommand = Int(number(status["ShellCommand"]))
+            snapshot.shellSlot = Int(number(status["ShellSlot"]))
+            snapshot.shellTruncated = status["ShellTruncated"] as? Bool ?? false
             snapshot.dimLevel = (status["DimLevel"] as? NSNumber)?.intValue
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
@@ -520,6 +611,26 @@ enum DroboMonitor {
         }
     }
 
+    /// Copies the output of the shell command the driver ran last out of the driver, 4 KiB at a
+    /// time. Sends nothing to the Drobo.
+    static func shellOutput(length: Int) -> String? {
+        guard length > 0, let service = driverService() else { return nil }
+        defer { IOObjectRelease(service) }
+        var connection: io_connect_t = 0
+        guard IOServiceOpen(service, mach_task_self_, 0, &connection) == KERN_SUCCESS else { return nil }
+        defer { IOServiceClose(connection) }
+        var data = Data()
+        while data.count < length {
+            var offset = UInt32(data.count).littleEndian
+            var slice = [UInt8](repeating: 0, count: 4096)
+            var size = slice.count
+            let result = IOConnectCallStructMethod(connection, 2, &offset, MemoryLayout<UInt32>.size, &slice, &size)
+            guard result == KERN_SUCCESS, size > 0 else { break }
+            data.append(contentsOf: slice[0..<min(size, slice.count)])
+        }
+        return data.isEmpty ? nil : String(decoding: data, as: UTF8.self)
+    }
+
     /// Sends one command to the driver. Returns nil on success, or a short reason.
     static func send(_ command: DroboCommand, argument: UInt32 = 0, name: String = "") -> String? {
         guard let service = driverService() else { return "The driver is not running." }
@@ -543,6 +654,8 @@ enum DroboMonitor {
         case KERN_SUCCESS: return nil
         case kIOReturnBusy: return "The Drobo is busy. Eject its volumes and try again."
         case kIOReturnNotReady: return "The Drobo is not ready yet."
+        case kIOReturnNotPermitted: return "The driver refused: the Drobo's own status does not allow this command on that bay now."
+        case kIOReturnNotPrivileged: return "The driver refused: the command was not confirmed."
         default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
         }
     }

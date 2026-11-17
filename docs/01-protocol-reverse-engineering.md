@@ -1127,6 +1127,55 @@ question left open in 11.17.
   Whether the identity-keyed tracker also blocks a wiped drive on that path was not traced.
 - No shell command was found that clears an expunge or a tracker.
 
+### 11.23 The firmware shell in the driver (driver v0.30.0, 2026-11-17)
+
+**Not yet tried on a Drobo**: everything below is how it is built, not what was observed.
+
+- The driver sends a shell command only when the app asks (Drives tab, Drive tools), never on
+  its own, and only a text from a fixed table in the driver (`kShellCommands`). The app picks
+  an entry by number; no caller can supply text. This is the filter the firmware lacks (11.22).
+- Framing as in 11.22: the text data-out, then 2 KiB reads with the same sequence number. The
+  first zero ends a chunk and a chunk that is not full ends the output. 256 KiB of output is
+  kept; reads carry on past that (to 4 MiB) so that the Drobo's side is emptied.
+- A read is given 120 s, because the Drobo answers it only when the command has run. With no
+  answer the command is given up and status polling pauses for 2 minutes, as for the log.
+- User-client selector 2 copies the output out, 4 KiB per call. `DroboStatus` gains
+  `ShellState` (0 never, 1 running, 2 done, 3 failed), `ShellLength`, `ShellCommand`,
+  `ShellSlot`, `ShellChunks`, `ShellSRB`, `ShellTruncated`; `CommandFormat` is 5.
+
+| Table entry | Text | Sent when |
+|---|---|---|
+| 1, 2, 3, 4 | `state error`, `state error verbose`, `state dpm`, `state list` | asked |
+| 5, 6 | `SmartStatus`, `SmartStatus 2` | asked and confirmed |
+| 16 | `SlotPowerCycle <slot>` (never with `epm`) | confirmed, and the bay's light is red or flashing red, or the array is protected and at rest |
+| 17 | `wipeDisk <slot>` | confirmed, and the bay's light is red or flashing red |
+| 18 | `expungeDisk <slot>` | confirmed, the array is protected and at rest, and the bay is not failed |
+
+"Protected and at rest" means none of the status flags bad disk, too many missing, no
+redundancy, rebuilding, formatting (page `09`). The light is the bay status byte of page `03`.
+The driver makes these checks itself from the pages it last read (`ShellPermitted`); the app
+makes them too, to say why a button is off. That the shell's slot number equals the slot id in
+page `03` is **[inf]** (both count from 0 and both put the SSD bay at 8), and the checks rest
+on it; the app therefore keeps the per-bay commands off until a read-only command has been
+answered, whose output lists the drives by slot. Slots 0 to 7 only: what these commands do to the
+SSD bay was not traced. The three per-bay commands were added at the maintainer's request and
+are outside safety rule 4's default.
+
+The two commands not covered in 11.22, from the firmware. **[obs]**
+
+- `wipeDisk <slot>` (`wipeDiskCommandHandler` @ `0x914bc`, help text "Clear DIS records to
+  make disk look new"; the serial console form is `esa wipeDisk`, where `esa` is the kernel
+  shell's prefix for this command table). Exactly one argument, slot 0 to 8. If the drive is
+  a member of the pack it is expunged first and the handler waits for that. It then
+  overwrites several ranges of the drive with a fill pattern and flushes the drive. Whether
+  the Drobo then takes back a drive it had expunged is not known (11.22).
+- `expungeDisk <slot>` (`expungeDiskCommandHandler` @ `0x21b1bc`, help text "PERMANENTLY
+  remove disk and prevent use in other packs"). Needs a loaded disk pack; calls
+  `DiskPackManager::expungePhysicalDisk` with the reason "COMMAND LINE EXPUNGE".
+
+Left out on purpose: whole-array commands (`cleardisk`, `formatFAT32`, `createGPT`), the
+deliberate crash commands, and `SMART-Test` (a stub on 4.2.3).
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.

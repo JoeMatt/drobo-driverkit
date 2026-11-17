@@ -31,6 +31,7 @@ public:
     // Called in-process by DroboUserClient on behalf of the host app.
     kern_return_t AppCommand(uint32_t command, uint32_t argument, const char * name) LOCALONLY;
     kern_return_t CopyLog(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied) LOCALONLY;
+    kern_return_t CopyShell(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied) LOCALONLY;
 
     virtual kern_return_t UserReportHBAHighestLogicalUnitNumber(uint64_t * value) override;
     virtual kern_return_t UserDoesHBASupportSCSIParallelFeature(uint32_t theValue, bool * result) override;

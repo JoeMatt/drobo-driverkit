@@ -70,7 +70,8 @@ DroboUserClient::ExternalMethod(uint64_t selector,
                                 void * reference)
 {
     // Selector 1: a slice of the event log read last. Input: u32 offset. Output: up to 4096 bytes.
-    if (selector == 1) {
+    // Selector 2: the same for the output of the shell command run last.
+    if (selector == 1 || selector == 2) {
         if (arguments == nullptr || arguments->structureInput == nullptr ||
             arguments->structureInput->getLength() < sizeof(uint32_t) ||
             ivars == nullptr || ivars->controller == nullptr) {
@@ -90,7 +91,8 @@ DroboUserClient::ExternalMethod(uint64_t selector,
             return kIOReturnNoMemory;
         }
         uint32_t copied = 0;
-        kern_return_t result = ivars->controller->CopyLog(offset, slice, capacity, &copied);
+        kern_return_t result = selector == 1 ? ivars->controller->CopyLog(offset, slice, capacity, &copied)
+                                             : ivars->controller->CopyShell(offset, slice, capacity, &copied);
         if (result == kIOReturnSuccess) {
             arguments->structureOutput = OSData::withBytes(slice, copied);
             if (arguments->structureOutput == nullptr) {

@@ -17,6 +17,14 @@
 //    - when the app turns it on, also sends MODE SENSE(10) page 0x3A sub-pages 0x35 (v0.25.0)
 //      and 0x33, 0x34, 0x36, 0x37 (v0.26.0) on the passthrough channel with the other
 //      management pages. Read-only; Drobo Dashboard sends the same requests.
+//    - when the app asks, and only then, sends one command to the firmware's shell (v0.30.0):
+//      system operation 0x0A on the passthrough channel, the command text data-out, then
+//      data-in reads of 0x800 bytes for its output (protocol notes 11.22). The text is one of
+//      the fixed entries in kShellCommands: `state error`, `state error verbose`, `state dpm`,
+//      `state list` (print firmware state), `SmartStatus`, `SmartStatus 2` (the Drobo reads
+//      SMART from each ready drive), and three that change the disk pack and are refused
+//      unless ShellPermitted agrees: `SlotPowerCycle <slot>`, `wipeDisk <slot>`,
+//      `expungeDisk <slot>`. None of these has been run on a Drobo yet.
 //  What it never does:
 //    - send a write of any kind. WRITE/UNMAP/FORMAT etc. are rejected in the driver with
 //      DATA PROTECT, and MODE SENSE reports the medium as write-protected;
@@ -85,6 +93,43 @@ static const uint32_t kLogMax          = kLogChunk * kLogMaxChunks;
 static const uint32_t kLogCopyMax      = 4096;      // bytes handed to the app per call
 static const uint32_t kLogHoldMS       = 120000;    // pause after a log read goes unanswered: a 32 KiB answer can be slow
 static const uint32_t kHealthHoldMS       = 30000;  // pause after an optional page times out
+// The firmware's command shell (system operation 0x0A, protocol notes 11.22).
+static const uint32_t kShellChunk      = 0x800;     // what Drobo Dashboard asks for per read
+static const uint32_t kShellMax        = 256 * 1024; // output kept for the app
+static const uint32_t kShellMaxChunks  = 2048;      // 4 MiB: reads go on past kShellMax so the Drobo's
+                                                    // output is drained, but not for ever
+static const uint32_t kShellTimeoutMS  = 120000;    // the Drobo answers a read when the command has run
+static const uint32_t kShellConfirm    = 0xD0B0;    // high 16 bits of the argument for guarded commands
+
+// What a shell command may do, and so what has to be true before it is sent.
+enum : uint32_t {
+    kShellReadsMemory   = 0,    // prints the firmware's own state; no drive is touched
+    kShellTouchesDrives = 1,    // sends commands to the drives (SMART); needs the confirm value
+    kShellPowerCycle    = 2,    // per bay; needs confirm, and a failed bay or a redundant array
+    kShellWipe          = 3,    // per bay; needs confirm, and a bay the Drobo already shows as failed
+    kShellExpunge       = 4,    // per bay; needs confirm, a redundant array at rest and a good bay
+};
+
+// The only command texts this driver will ever send to the shell. The app picks one by number
+// and, for the per-bay ones, gives a slot (0 to 8, the firmware's numbering); it cannot supply
+// text. The firmware itself filters almost nothing, so this table is the filter.
+struct DroboShellCommand
+{
+    uint32_t     identifier;
+    const char * text;          // "%u" marks where the slot goes
+    uint32_t     kind;
+};
+static const DroboShellCommand kShellCommands[] = {
+    {  1, "state error",          kShellReadsMemory   },    // Error Policy Manager: limits and per-drive counters
+    {  2, "state error verbose",  kShellReadsMemory   },
+    {  3, "state dpm",            kShellReadsMemory   },    // disk pack manager
+    {  4, "state list",           kShellReadsMemory   },    // names of the managers `state` knows
+    {  5, "SmartStatus",          kShellTouchesDrives },    // SMART attributes of every ready drive
+    {  6, "SmartStatus 2",        kShellTouchesDrives },
+    { 16, "SlotPowerCycle %u",    kShellPowerCycle    },    // without "epm": no error is reported
+    { 17, "wipeDisk %u",          kShellWipe          },    // clears the Drobo header on that drive
+    { 18, "expungeDisk %u",       kShellExpunge       },    // permanently removes the drive from the pack
+};
 static const uint32_t kSysSlot         = 33;        // request slot for system-control requests
 static const uint32_t kMaxFlushWaiters = 32;
 static const uint32_t kHealthSlot      = 32;        // request slot after the 32 block-I/O slots
@@ -246,6 +291,17 @@ struct DroboSCSIController_IVars
     uint32_t                   logChunks;
     uint32_t                   logState;            // 0 never read, 1 reading, 2 read, 3 failed, 4 no buffer
     uint32_t                   logLastSRB;
+    // The firmware shell (system operation 0x0A, protocol notes 11.22). One command at a time,
+    // only when the app asks, only texts from kShellCommands.
+    uint8_t *                  shellText;           // kShellMax bytes
+    uint32_t                   shellLength;
+    uint32_t                   shellChunks;
+    uint32_t                   shellState;          // 0 never run, 1 running, 2 done, 3 failed
+    uint32_t                   shellCommand;        // identifier of the command run last
+    uint32_t                   shellSlot;
+    uint32_t                   shellLastSRB;
+    bool                       shellReading;        // false while the command text is being sent
+    bool                       shellTruncated;      // output was longer than kShellMax
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
 
@@ -313,6 +369,9 @@ DroboSCSIController::free()
         OSSafeReleaseNULL(ivars->requestBuffer);
         OSSafeReleaseNULL(ivars->logDMA);
         OSSafeReleaseNULL(ivars->logBuffer);
+        if (ivars->shellText != nullptr) {
+            IOSafeDeleteNULL(ivars->shellText, uint8_t, kShellMax);
+        }
         if (ivars->logText != nullptr) {
             IOSafeDeleteNULL(ivars->logText, uint8_t, kLogMax);
         }
@@ -558,7 +617,14 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     // app refuses to send blink, standby or restart to a driver that does not report this.
     // 3 adds the LED dim level commands (v0.28.0).
     // 4 adds the event log read (v0.29.0).
-    DictSetNumber(status, "CommandFormat", 4);
+    DictSetNumber(status, "CommandFormat", 5);
+    DictSetNumber(status, "ShellState", iv->shellState);
+    DictSetNumber(status, "ShellLength", iv->shellState == 2 ? iv->shellLength : 0);
+    DictSetNumber(status, "ShellCommand", iv->shellCommand);
+    DictSetNumber(status, "ShellSlot", iv->shellSlot);
+    DictSetNumber(status, "ShellChunks", iv->shellChunks);
+    DictSetNumber(status, "ShellSRB", iv->shellLastSRB);
+    status->setObject("ShellTruncated", iv->shellTruncated ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "EventLogState", (iv->logVA == nullptr || iv->logText == nullptr) ? 4 : iv->logState);
     DictSetNumber(status, "EventLogLength", iv->logState == 2 ? iv->logLength : 0);
     DictSetNumber(status, "EventLogChunks", iv->logChunks);
@@ -784,6 +850,8 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
             OSSafeReleaseNULL(iv->logBuffer);
         }
     }
+
+    iv->shellText = IONewZero(uint8_t, kShellMax);   // optional: without it the shell command answers "unsupported"
 
     // Wait for the firmware: handshake acknowledged, DroboPort published, adapter ready.
     SetStage(iv, "waiting-for-firmware");
@@ -1231,7 +1299,115 @@ enum : uint32_t {
     kDroboAppCommandSetDim      = 8,    // argument = LED dim level, 0 (brightest) to 9
     kDroboAppCommandGetDim      = 9,    // reads the LED dim level into DroboStatus "DimLevel"
     kDroboAppCommandReadLog     = 10,   // reads the Drobo's event log; fetch it with CopyLog
+    kDroboAppCommandShell       = 11,   // runs one command from kShellCommands; fetch the output with CopyShell.
+                                        // argument = identifier | slot << 8 | confirm value << 16
 };
+
+// The next read of the shell's output, as Drobo Dashboard builds it (ESASCSISession::runEsaCommand,
+// protocol notes 11.22): EA 10 80 0A <sequence> 00 <20 first, 00 after> 08 00 00, 0x800 bytes
+// data-in, with the sequence number the command text went out with.
+static void
+PrepareShellRead(DroboSCSIController_IVars * iv)
+{
+    bzero(iv->commandCDB, sizeof(iv->commandCDB));
+    iv->commandCDB[0] = 0xEA;
+    iv->commandCDB[1] = 0x10;
+    iv->commandCDB[2] = 0x80;
+    iv->commandCDB[3] = 0x0A;
+    iv->commandCDB[4] = iv->commandSequence;
+    iv->commandCDB[6] = iv->shellChunks == 0 ? 0x20 : 0x00;
+    iv->commandCDB[7] = (uint8_t) (kShellChunk >> 8);
+    iv->commandCDB[8] = (uint8_t) kShellChunk;
+    iv->commandDataOut   = false;
+    iv->commandLength    = kShellChunk;
+    iv->commandOperation = 0x0A;
+    iv->shellReading     = true;
+}
+
+// Whether a guarded shell command may go out now, judged from what the Drobo itself last
+// reported: the bay's light from the slot page (management page 0x03, record byte 19) and the
+// array's status flags (page 0x09). The app shows the same data, but the check is made here so
+// that nothing the app gets wrong can send a destructive command to the wrong bay.
+//   - SlotPowerCycle: the bay is already failed (nothing more to lose there), or the array is
+//     redundant and at rest.
+//   - wipeDisk: only a bay the Drobo already shows as failed (red, or flashing red). Wiping a
+//     working member would cost that drive's copy of the data.
+//   - expungeDisk: only a working bay in an array that is redundant and at rest; expunging
+//     with no redundancy loses data.
+// The SSD bay (slot 8) is left out: what these commands do to the accelerator was not traced.
+static kern_return_t
+ShellPermitted(const DroboSCSIController_IVars * iv, const DroboShellCommand * chosen, uint32_t slot, uint32_t confirm)
+{
+    if (chosen->kind == kShellReadsMemory) {
+        return kIOReturnSuccess;
+    }
+    if (confirm != kShellConfirm) {
+        return kIOReturnNotPrivileged;
+    }
+    if (chosen->kind == kShellTouchesDrives) {
+        return kIOReturnSuccess;
+    }
+    // Indices into kHealthPages: 2 is the slot page (0x03), 6 the status page (0x09). Each
+    // stored page starts with its 4-byte header.
+    const uint8_t * slots = iv->healthData[2];
+    const uint32_t  slotsLength = iv->healthLength[2];
+    if (slot > 7 || iv->healthLength[6] < 8 || slotsLength < 5) {
+        return kIOReturnNotPermitted;
+    }
+    const uint32_t flags = BE32(iv->healthData[6] + 4);
+    bool found = false;
+    uint8_t status = 0;
+    for (uint32_t offset = 5; offset + 72 <= slotsLength; offset += 72) {
+        if (slots[offset + 2] == slot) {
+            status = slots[offset + 19];
+            found = true;
+            break;
+        }
+    }
+    if (!found || (status & 0x80) != 0) {             // unknown or empty bay
+        return kIOReturnNotPermitted;
+    }
+    const uint8_t light = status & 0x0F;
+    const bool failed = light == 1 || light == 6;     // red, flashing red
+    // bad disk, too many missing, no redundancy, rebuilding, formatting
+    const bool atRest = (flags & (0x0010 | 0x0020 | 0x0040 | 0x0200 | 0x0400)) == 0;
+    bool allowed = false;
+    switch (chosen->kind) {
+        case kShellPowerCycle: allowed = failed || atRest; break;
+        case kShellWipe:       allowed = failed; break;
+        case kShellExpunge:    allowed = atRest && !failed; break;
+        default: break;
+    }
+    return allowed ? kIOReturnSuccess : kIOReturnNotPermitted;
+}
+
+// Hands the app up to `capacity` bytes of the output of the shell command run last.
+kern_return_t
+DroboSCSIController::CopyShell(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied)
+{
+    DroboSCSIController_IVars * iv = ivars;
+    if (iv == nullptr || destination == nullptr || copied == nullptr) {
+        return kIOReturnBadArgument;
+    }
+    *copied = 0;
+    const uint32_t length = iv->shellLength;
+    if (iv->shellText == nullptr || iv->shellState != 2 || length > kShellMax) {
+        return kIOReturnNotReady;
+    }
+    if (offset >= length) {
+        return kIOReturnUnderrun;
+    }
+    uint32_t count = length - offset;
+    if (count > capacity) {
+        count = capacity;
+    }
+    if (count > kLogCopyMax) {
+        count = kLogCopyMax;
+    }
+    memcpy(destination, iv->shellText + offset, count);
+    *copied = count;
+    return kIOReturnSuccess;
+}
 
 
 // The next request for the event log, exactly as Drobo Dashboard builds it
@@ -1348,7 +1524,8 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                 break;
             }
             case kDroboAppCommandReadLog: {
-                if (iv->commandPending || iv->commandInflight || !iv->healthAvailable || iv->logState == 1) {
+                if (iv->commandPending || iv->commandInflight || !iv->healthAvailable || iv->logState == 1 ||
+                    iv->shellState == 1) {
                     result = kIOReturnBusy;
                     break;
                 }
@@ -1360,6 +1537,70 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                 iv->logChunks = 0;
                 iv->logState = 1;
                 PrepareLogChunk(iv);
+                iv->commandPending = true;
+                PublishStatus(this, iv);
+                HealthSend();
+                break;
+            }
+            case kDroboAppCommandShell: {
+                const uint32_t identifier = argument & 0xFF;
+                const uint32_t slot       = (argument >> 8) & 0xFF;
+                const uint32_t confirm    = argument >> 16;
+                const DroboShellCommand * chosen = nullptr;
+                for (uint32_t i = 0; i < sizeof(kShellCommands) / sizeof(kShellCommands[0]); i++) {
+                    if (kShellCommands[i].identifier == identifier) {
+                        chosen = &kShellCommands[i];
+                    }
+                }
+                if (chosen == nullptr) {
+                    result = kIOReturnBadArgument;
+                    break;
+                }
+                if (iv->commandPending || iv->commandInflight || !iv->healthAvailable ||
+                    iv->shellState == 1 || iv->logState == 1) {
+                    result = kIOReturnBusy;
+                    break;
+                }
+                if (iv->shellText == nullptr) {
+                    result = kIOReturnUnsupported;
+                    break;
+                }
+                result = ShellPermitted(iv, chosen, slot, confirm);
+                if (result != kIOReturnSuccess) {
+                    break;
+                }
+                // The text from the table, with the slot (one digit: ShellPermitted allows 0 to 7)
+                // in place of "%u". No terminating zero and no newline, as Dashboard sends it.
+                bzero(iv->commandCDB, sizeof(iv->commandCDB));
+                bzero(iv->commandData, sizeof(iv->commandData));
+                uint32_t length = 0;
+                for (const char * c = chosen->text; *c != 0 && length + 1 < sizeof(iv->commandData); c++) {
+                    if (c[0] == '%' && c[1] == 'u') {
+                        iv->commandData[length++] = (uint8_t) ('0' + (slot & 7));
+                        c++;
+                    } else {
+                        iv->commandData[length++] = (uint8_t) *c;
+                    }
+                }
+                // EA 10 00 0A <sequence> 00 20 <length16> 00, the text data-out (11.22).
+                iv->commandCDB[0] = 0xEA;
+                iv->commandCDB[1] = 0x10;
+                iv->commandCDB[3] = 0x0A;
+                iv->commandCDB[4] = ++iv->commandSequence;
+                iv->commandCDB[6] = 0x20;
+                iv->commandCDB[7] = (uint8_t) (length >> 8);
+                iv->commandCDB[8] = (uint8_t) length;
+                iv->commandDataOut   = true;
+                iv->commandLength    = length;
+                iv->commandOperation = 0x0A;
+                iv->shellReading   = false;
+                iv->shellLength    = 0;
+                iv->shellChunks    = 0;
+                iv->shellTruncated = false;
+                iv->shellLastSRB   = 0;
+                iv->shellCommand   = identifier;
+                iv->shellSlot      = chosen->kind >= kShellPowerCycle ? slot : 0;
+                iv->shellState     = 1;
                 iv->commandPending = true;
                 PublishStatus(this, iv);
                 HealthSend();
@@ -2215,6 +2456,14 @@ DroboSCSIController::HealthSend()
         PublishStatus(this, iv);
         return false;
     }
+    if (isCommand && iv->commandOperation == 0x0A && (iv->dead || !iv->healthAvailable)) {
+        // The same for a shell command.
+        iv->commandPending = false;
+        iv->commandOperation = 0;
+        iv->shellState = 3;
+        PublishStatus(this, iv);
+        return false;
+    }
     if (mach_absolute_time() < iv->healthHoldUntil) {
         return false;                               // a pending command goes out when the hold ends
     }
@@ -2231,7 +2480,9 @@ DroboSCSIController::HealthSend()
     const uint32_t length = isCommand ? iv->commandLength : HealthPageLength(iv, page);
     uint8_t * memory = iv->requestVA + kHealthSlot * kDroboSlotSize;
     bzero(memory, kDroboSlotSize);
-    bzero(iv->requestVA + kHealthDataOffset, kHealthPageMax);
+    // A shell read is the one request that fills more of the 4 KiB data area than a page does.
+    bzero(iv->requestVA + kHealthDataOffset,
+          (isCommand && iv->commandOperation == 0x0A) ? kShellChunk : kHealthPageMax);
     // The event log read is the one request whose data goes to the larger buffer.
     uint8_t * const logArea = iv->logVA;            // read once: Stop clears it from another queue
     const bool isLog = isCommand && iv->commandOperation == 0x22;
@@ -2343,6 +2594,56 @@ DroboSCSIController::HealthResponse()
         HealthSend();
         return;
     }
+    if (iv->commandInflight && iv->commandOperation == 0x0A) {
+        // The shell: first the answer to the command text, then its output 2 KiB at a time.
+        // As with the log, the text has no zero bytes and the area was cleared, so the first
+        // zero ends a chunk, and a chunk that is not full is the last one (Dashboard stops at
+        // the first chunk shorter than the one before).
+        const bool ok = scsiStatus == 0 &&
+                        (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort);
+        bool more = false;
+        iv->shellLastSRB = srbResponse;
+        if (ok && !iv->shellReading) {
+            more = true;                            // the Drobo took the command: read what it prints
+        } else if (ok) {
+            const uint8_t * area = iv->requestVA + kHealthDataOffset;
+            const uint32_t got = (transferred != 0 && transferred < kShellChunk) ? (uint32_t) transferred : kShellChunk;
+            uint32_t used = 0;
+            while (used < got && area[used] != 0) {
+                used++;
+            }
+            const uint32_t room = kShellMax - iv->shellLength;
+            const uint32_t take = used < room ? used : room;
+            if (take < used) {
+                iv->shellTruncated = true;
+            }
+            if (iv->shellText != nullptr) {
+                memcpy(iv->shellText + iv->shellLength, area, take);
+                iv->shellLength += take;
+            }
+            iv->shellChunks++;
+            // Past kShellMax the reads carry on, so the Drobo's side is emptied: it refuses the
+            // next command while output is waiting.
+            more = used == kShellChunk && iv->shellChunks < kShellMaxChunks;
+            if (used == kShellChunk && !more) {
+                iv->shellTruncated = true;
+            }
+        }
+        iv->commandInflight = false;
+        iv->tmInflight = false;
+        if (more) {
+            PrepareShellRead(iv);
+            iv->commandPending = true;              // goes out now, or from the timer if the channel is busy
+        } else {
+            iv->commandOperation = 0;
+            iv->shellState = ok ? 2 : 3;
+            iv->lastCommandSRB = srbResponse;
+            iv->statCommands++;
+            PublishStatus(this, iv);
+        }
+        HealthSend();
+        return;
+    }
     if (iv->commandInflight) {
         // Answer to an app command (blink, standby, rename): record it and carry on polling.
         if (iv->commandOperation == 0x21 && scsiStatus == 0 &&
@@ -2411,7 +2712,10 @@ IMPL(DroboSCSIController, HandleHealthTimer)
         return;
     }
     // A health query that never came back disables health polling; block I/O is unaffected.
-    if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > 10000 * iv->ticksPerMillisecond) {
+    // A shell command gets longer: the Drobo answers a read only when the command has run.
+    const bool shellRun = iv->commandInflight && iv->commandOperation == 0x0A;
+    const uint64_t patience = shellRun ? kShellTimeoutMS : 10000;
+    if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > patience * iv->ticksPerMillisecond) {
         const bool optional = !iv->commandInflight && iv->healthPage >= kHealthFirstOptional &&
                               iv->healthPage < kHealthPageCount;
         const bool logRead = iv->commandInflight && iv->commandOperation == 0x22;
@@ -2424,6 +2728,13 @@ IMPL(DroboSCSIController, HandleHealthTimer)
             iv->commandOperation = 0;
             iv->logState = 3;
             iv->logLastSRB = 0xFFFFFFFF;
+            iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
+            PublishStatus(this, iv);
+        } else if (shellRun) {
+            // The same for a shell command that went unanswered.
+            iv->commandOperation = 0;
+            iv->shellState = 3;
+            iv->shellLastSRB = 0xFFFFFFFF;
             iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
             PublishStatus(this, iv);
         } else if (optional) {

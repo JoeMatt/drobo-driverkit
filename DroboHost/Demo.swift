@@ -71,7 +71,7 @@ enum Demo {
         } + [DroboSlot(id: 8, physicalBytes: 0, statusCode: 0x80, model: "")]
         snapshot.unprotectedBytes = 0
         snapshot.extendedEnabled = true
-        snapshot.commandFormat = 3
+        snapshot.commandFormat = 5
         snapshot.dimLevel = 2
         snapshot.systemTemperature = 36
         snapshot.uptime = 84 * 86_400 + 2 * 3600 + 51 * 60
