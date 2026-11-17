@@ -279,7 +279,12 @@ struct DroboSnapshot {
         guard shellStep != 0 else { return "" }
         let request = shellStep == 1 ? "the command text" : "a read of the output"
         if shellSRB == 0xFFFF_FFFF { return "The Drobo did not answer \(request) within \(shellElapsedMS / 1000) s." }
-        return "The Drobo turned down \(request) after \(shellElapsedMS) ms (SRB response \(shellSRB), SCSI status \(shellSCSIStatus), \(shellTransferred) bytes moved)."
+        // Seen on the 8D: its firmware passes shell commands on only in its internal lab mode
+        // and turns down every command text otherwise, within milliseconds (protocol notes 11.24).
+        let labMode = shellStep == 1 && shellSRB == 4 && shellElapsedMS < 1000
+            ? " This Drobo's firmware accepts these commands only in its internal lab mode, so Drive tools cannot work on it."
+            : ""
+        return "The Drobo turned down \(request) after \(shellElapsedMS) ms (SRB response \(shellSRB), SCSI status \(shellSCSIStatus), \(shellTransferred) bytes moved)." + labMode
     }
     /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
     var dimLevel: Int?

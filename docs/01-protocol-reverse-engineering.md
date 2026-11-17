@@ -1037,9 +1037,9 @@ All four are system operations in the data-out form this driver already uses for
   command, `cleardisk`, deliberate crash). (An earlier version of this note gave
   `SystemState <manager>`: `SystemState` is the name of a section in the diagnostics file,
   not a shell command. See 11.22.)
-- The shell is reachable from the host: the firmware calls it `esaPassthroughCommand`, which
+- The shell has a path from the host: the firmware calls it `esaPassthroughCommand`, which
   is what Dashboard's `runEsaCommand` (system operation `0x0A`, 11.19) feeds. Framing decoded
-  in 11.22. **Nothing sent.**
+  in 11.22. **Nothing sent.** (The firmware only lets it through in its lab mode: 11.24.)
 
 ### 11.22 The firmware shell over system operation `0x0A` (2026-11-17)
 
@@ -1084,11 +1084,16 @@ its bytes, with no terminating zero and no newline.
 - **The command length is not checked.** `sendRequest` copies as many bytes as CDB bytes 7–8
   say into a message field of about 256 bytes (the whole message is 308 bytes) and writes a
   zero after them. A host must keep commands well under 256 bytes.
-- **The firmware filters almost nothing.** Outside its internal "lab mode" it refuses only
-  text starting with `proc uboot` or `enableBrickOverride` (status 16). Every other command
-  runs, destructive ones included. Any restriction has to be enforced on the host, by exact
-  match against a fixed list. The firmware's own command handlers compare prefixes
-  (`strncmp`), so a prefix check on the host is not enough.
+- **Outside its internal "lab mode" the firmware refuses every command except two.**
+  (Corrected 2026-11-17. This bullet first said the opposite, that only two texts were
+  refused: the two branches after the `strncmp` calls @ `0x147188` and `0x1471a0` were read
+  the wrong way round. Hardware then showed it, 11.24.) When `InLabMode()` is false, only a
+  text starting with `proc uboot` or `enableBrickOverride` is passed on ("HAM: Not in Lab
+  Mode, but allowing host command"). Any other text gets "HAM: Error: Host command not
+  allowed, not in Lab Mode:" and status 16, and the command is released. What those two
+  commands do was not traced, and this project does not send them. In lab mode every command
+  runs, destructive ones included, and the handlers compare prefixes (`strncmp`), so a host
+  must still restrict itself by exact match against a fixed list.
 - The text is split into words and run by `ConsoleCommand::ExecuteCommand`, the same command
   table as the serial console (`DebugClass::esaPassthroughCommand` @ `0x15acc`). The word
   `resume` is treated specially.
@@ -1134,7 +1139,8 @@ failed; see 11.24.
 
 - The driver sends a shell command only when the app asks (Drives tab, Drive tools), never on
   its own, and only a text from a fixed table in the driver (`kShellCommands`). The app picks
-  an entry by number; no caller can supply text. This is the filter the firmware lacks (11.22).
+  an entry by number; no caller can supply text. The firmware has no such list of its own in
+  lab mode, and outside lab mode it refuses all of these (11.22, 11.24).
 - Framing as in 11.22: the text data-out, then 2 KiB reads with the same sequence number. The
   first zero ends a chunk and a chunk that is not full ends the output. 256 KiB of output is
   kept; reads carry on past that (to 4 MiB) so that the Drobo's side is emptied.
@@ -1243,7 +1249,8 @@ bytes of text are fetched the same way as blink's one byte.
 
 - The command text while an earlier command is still open: status 9 (11.22).
 - The two message queues cannot be opened (`DebugProxy::Init` @ `0x128a50`): status 14.
-- A blocked text (11.22): status 16.
+- A text the firmware does not allow, which outside lab mode is every text but two (11.22):
+  status 16. **This is what happened**, see the live run below.
 - A read when the shell hands over no output within **30 seconds** (the wait in
   `DebugProxy::passData` @ `0x1310b0`, `DiagnosticsManager`'s default at `+0x0c`), or the
   queue read fails: status 16. After an error on a read the firmware releases the command
@@ -1253,10 +1260,26 @@ bytes of text are fetched the same way as blink's one byte.
   not as an error. Two shell threads (`tDebug1`, `tDebug2`) are started unconditionally
   (`DebugClass::Initialize` @ `0x1ea9c`), in and out of lab mode.
 
-On a Drobo with no command open the text is therefore expected to be accepted, which leaves
-the copy of the text failing (item 2 above), or the first read failing: at once, or after
-the 30 seconds if the shell did not answer (`state error` takes the Error Policy Manager's
-lock). **Which of these happened is not known.** **[inf]**
+**Live run with driver v0.30.1 (2026-11-17, 02:35).** **[obs]** The maintainer activated
+v0.30.1 and ran Drive tools commands; the registry was read after `state dpm` (entry 3) and
+again after `SmartStatus 2` (entry 6). Both times: `ShellStep` 1, `ShellSRB` 4,
+`ShellSCSIStatus` 0, `ShellTransferred` 0, `ShellElapsedMS` 5. The Drobo turns down the
+**command text**, at once.
+The volumes remounted read-only afterwards and the status pages kept answering.
+
+**Cause: the shell is closed outside lab mode.** That result ruled out the 30-second wait
+and the reads, and sent the analysis back to the text check in case `0A` (@ `0x147168`).
+**[obs]** `InLabMode()` @ `0x314084` asks the kernel once (system call `0x1a52`) and keeps
+the answer. When it is false, the text is compared with `proc uboot` (10 bytes) and
+`enableBrickOverride` (19 bytes); a text that starts with neither is refused with status 16,
+which reaches the host as SRB response 4 with no data after a few milliseconds. `state error
+verbose`, `state dpm`, `SmartStatus` and the per-bay commands are all refused this way, so
+**none of the Drive tools commands can work on a Drobo that is not in lab mode**, and this
+unit is not. What sets lab mode in the kernel was not traced. 11.22 had this check the wrong
+way round and is corrected.
+
+So the first failure (v0.30.0) was the same refusal, and nothing a shell command would have
+done has happened on the Drobo: no command reached the shell. **[inf]**
 
 **A rule for hosts.** **[obs]** A `0A` read (byte 2 = `80`) when no command is open is not
 refused. The firmware logs "unexpected passData when expect sendRequest (new esa cmd)" and
@@ -1271,11 +1294,11 @@ was answered last: `ShellStep` (1 the command text, 2 a read), `ShellSCSIStatus`
 `ShellTransferred` and `ShellElapsedMS`, next to `ShellSRB`. A request the Drobo never
 answers keeps `ShellSRB` `0xFFFFFFFF` and now also its step. The app shows these under Drive
 tools when a command fails, `drobo console` prints them, and `drobo console --json` returns
-them. **Not yet run on a Drobo.** How to read the next failure:
+them. This is what showed the refusal above. How to read a failure:
 
 | `ShellStep` | `ShellElapsedMS` | Meaning |
 |---|---|---|
-| 1 | any | The text was turned down: the copy from the host failed, or the Drobo has a command open |
+| 1 | a few | The text was turned down: not in lab mode (seen), or the copy from the host failed, or the Drobo has a command open |
 | 2 | about 30 000 | The text was accepted and the shell printed nothing in 30 s |
 | 2 | small | The text was accepted and the read failed at once |
 
