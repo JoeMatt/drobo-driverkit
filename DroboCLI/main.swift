@@ -52,6 +52,11 @@ func historyJSON(_ report: BayReport) -> [String: Any] {
         entry["timesFlagged"] = bay.episodes.count
         entry["errorCountRise"] = bay.errorRise
         entry["episodes"] = episodes
+        if let low = bay.temperatureLow, let high = bay.temperatureHigh {
+            entry["temperatureLow"] = low
+            entry["temperatureHigh"] = high
+        }
+        if let last = bay.temperatureNow { entry["temperatureLast"] = last }
         bays.append(entry)
     }
     var result: [String: Any] = ["days": Int(report.window / 86_400), "bays": bays]
@@ -60,6 +65,19 @@ func historyJSON(_ report: BayReport) -> [String: Any] {
     result["advice"] = report.advice
     result["enclosureSuspected"] = report.enclosureSuspected
     result["sharedModel"] = report.sharedModel
+    result["heat"] = report.heatNote
+    result["heatSuspected"] = report.heatSuspected
+    if let low = report.enclosureLow, let high = report.enclosureHigh {
+        result["enclosureTemperatureLow"] = low
+        result["enclosureTemperatureHigh"] = high
+    }
+    result["flaggings"] = report.faultReadings.map { reading -> [String: Any] in
+        var entry: [String: Any] = ["bay": reading.bay < 8 ? "\(reading.bay + 1)" : "ssd", "date": stamp.string(from: reading.date),
+                                    "temperature": reading.temperature, "hot": reading.isHot]
+        if let usual = reading.usual { entry["usual"] = usual }
+        if let others = reading.others { entry["otherDrives"] = others }
+        return entry
+    }
     return result
 }
 
@@ -76,12 +94,20 @@ func historyText(_ report: BayReport) -> String {
     for bay in report.bays {
         let name = bay.name.padding(toLength: 8, withPad: " ", startingAt: 0)
         let verdict = bay.verdict.label.padding(toLength: 15, withPad: " ", startingAt: 0)
-        lines.append(name + verdict + bay.summary)
+        lines.append(name + verdict + bay.summary + (bay.temperatureText.isEmpty ? "" : " " + bay.temperatureText + "."))
+    }
+    if !report.heatNote.isEmpty {
+        lines.append("")
+        lines.append(report.heatNote)
+    }
+    if let low = report.enclosureLow, let high = report.enclosureHigh {
+        lines.append("Enclosure " + (low == high ? "\(low) C" : "\(low)-\(high) C") + " over the same period.")
     }
     let days = Int(report.window / 86_400)
     lines.append("")
     lines.append("Last \(days) days, \(report.restarts.count) Drobo restart(s) seen. Covers only the time the app was running.")
     return lines.joined(separator: "\n")
+        .replacingOccurrences(of: " °C", with: " C").replacingOccurrences(of: "–", with: "-")
 }
 
 // MARK: State

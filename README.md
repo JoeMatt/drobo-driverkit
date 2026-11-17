@@ -21,6 +21,8 @@ for the direct-attached Thunderbolt units.
 - **Drive history**: each bay's status over two weeks, kept across restarts. It tells a drive
   that is flagged and comes back from one that stays failed, and says so when several bays do
   it together, which points at the power supply or backplane rather than the drives.
+  Drive and enclosure temperatures are kept alongside, so it can say whether a drive was
+  running hot when it was flagged.
 - **The Drobo's own event log**, read on request: power events, drive errors and rebuilds the
   unit recorded itself. Built from analysis and not yet confirmed on a Drobo.
 - **Alerts** as notifications and, optionally, to a webhook.

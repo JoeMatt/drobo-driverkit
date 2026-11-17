@@ -13,6 +13,10 @@ struct BayChange: Codable, Identifiable {
     /// How many Drobo restarts this history had seen when the change was recorded. Two changes
     /// with different values have a restart between them.
     var boot = 0
+    /// Readings at the moment of the change, when the Drobo reports them.
+    var temperature: Int?
+    var enclosureTemperature: Int?
+    var fans: [Int]?
 
     /// The Drobo is complaining about this drive (as opposed to healthy, rebuilding or empty).
     var isFault: Bool { BayHistory.isFault(statusCode) || (statusCode != 0x80 && (diskState.map { $0 & 0x0F >= 2 } ?? false)) }
@@ -52,7 +56,18 @@ struct BayAnalysis: Identifiable {
     var summary = ""
     /// Status over the window, oldest first, for the timeline strip. Each entry holds until the next.
     var spans: [(date: Date, statusCode: UInt8)] = []
+    /// Drive temperature over the window, oldest first, thinned for drawing.
+    var temperatures: [(date: Date, value: Int)] = []
+    var temperatureLow: Int?
+    var temperatureHigh: Int?
+    var temperatureNow: Int?
     var id: Int { bay }
+    /// "34–41 °C, last 38 °C", or empty when nothing was recorded.
+    var temperatureText: String {
+        guard let low = temperatureLow, let high = temperatureHigh else { return "" }
+        let range = low == high ? "\(low) °C" : "\(low)–\(high) °C"
+        return temperatureNow.map { "\(range), last \($0) °C" } ?? range
+    }
     var name: String { bay < 8 ? "Bay \(bay + 1)" : "SSD bay" }
 }
 
@@ -67,11 +82,58 @@ struct BayReport {
     var enclosureSuspected = false
     /// Set when every flagged bay holds this one model and no healthy bay does.
     var sharedModel = ""
+    /// Enclosure temperature over the window, thinned for drawing.
+    var enclosureTemperatures: [(date: Date, value: Int)] = []
+    var enclosureLow: Int?
+    var enclosureHigh: Int?
+    /// Each flagging in the window for which a drive temperature is known.
+    var faultReadings: [FaultReading] = []
+    /// What the temperatures say about the faults, or about a drive running hot now. Empty when
+    /// there is nothing to go on.
+    var heatNote = ""
+    var heatSuspected = false
+}
+
+/// Temperatures at one moment: the enclosure's, and each occupied bay's drive.
+struct ThermalSample: Codable {
+    let date: Date
+    var enclosure: Int?
+    var fans: [Int] = []
+    /// Degrees Celsius by bay number.
+    var drives: [Int: Int] = [:]
+}
+
+/// A drive's temperature when it was flagged, against what is normal for it.
+struct FaultReading {
+    let bay: Int
+    let date: Date
+    let temperature: Int
+    /// This drive's median over the window.
+    var usual: Int?
+    /// The other drives' median at the same moment.
+    var others: Int?
+
+    var isHot: Bool {
+        temperature >= BayHistory.hotDrive
+            || (usual.map { temperature >= $0 + BayHistory.hotMargin } ?? false)
+            || (others.map { temperature >= $0 + BayHistory.hotMargin } ?? false)
+    }
 }
 
 struct BayHistoryFile: Codable {
     var changes: [BayChange] = []
     var restarts: [Date] = []
+    var samples: [ThermalSample] = []
+
+    init() {}
+
+    // Files written before temperatures were kept have no samples.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        changes = try container.decodeIfPresent([BayChange].self, forKey: .changes) ?? []
+        restarts = try container.decodeIfPresent([Date].self, forKey: .restarts) ?? []
+        samples = try container.decodeIfPresent([ThermalSample].self, forKey: .samples) ?? []
+    }
 }
 
 /// Per-bay status over time, kept across app and Drobo restarts, and what the pattern says:
@@ -88,6 +150,14 @@ final class BayHistory: ObservableObject {
 
     private let persist: Bool
     private let changeLimit = 5000
+    private let sampleLimit = 4500
+
+    /// Seconds between temperature samples.
+    static let sampleInterval: TimeInterval = 300
+    /// A drive at or above this is called hot outright. Most drives are rated to about 60 °C.
+    static let hotDrive = 50
+    /// Degrees above its own usual reading, or above the other drives, that counts as hot.
+    static let hotMargin = 8
     private var wasReady: Bool?
     private var lastHeadline = ""
 
@@ -179,12 +249,19 @@ final class BayHistory: ObservableObject {
             if last == nil, slot.isEmpty { continue }
             file.changes.append(BayChange(date: now, bay: slot.id, statusCode: slot.statusCode,
                                           errorCount: errors ?? last?.errorCount, diskState: slot.diskState ?? last?.diskState,
-                                          model: slot.isEmpty ? (last?.model ?? "") : slot.model, boot: boot))
+                                          model: slot.isEmpty ? (last?.model ?? "") : slot.model, boot: boot,
+                                          temperature: slot.isEmpty ? nil : slot.temperature,
+                                          enclosureTemperature: snapshot.systemTemperature,
+                                          fans: snapshot.fanLevels.isEmpty ? nil : snapshot.fanLevels.map { Int($0) }))
             changed = true
         }
-        guard changed else { return }
+        // A sample on every change as well as on the clock, so each flagging has the other
+        // drives' temperatures beside it.
+        let sampled = sample(snapshot, now: now, force: changed)
+        guard changed || sampled else { return }
         if file.changes.count > changeLimit { file.changes.removeFirst(file.changes.count - changeLimit) }
         save()
+        guard changed else { return }
 
         let report = Self.analyze(file, now: now)
         if report.headline != lastHeadline {
@@ -193,7 +270,33 @@ final class BayHistory: ObservableObject {
         }
     }
 
+    /// Keeps the temperatures the Drobo reports, at most once per `sampleInterval` unless forced.
+    private func sample(_ snapshot: DroboSnapshot, now: Date, force: Bool) -> Bool {
+        if !force, let last = file.samples.last, now.timeIntervalSince(last.date) < Self.sampleInterval { return false }
+        var entry = ThermalSample(date: now, enclosure: snapshot.systemTemperature, fans: snapshot.fanLevels.map { Int($0) })
+        for slot in snapshot.slots where !slot.isEmpty {
+            if let temperature = slot.temperature { entry.drives[slot.id] = temperature }
+        }
+        guard entry.enclosure != nil || !entry.drives.isEmpty else { return false }
+        file.samples.append(entry)
+        let cutoff = now.addingTimeInterval(-Self.defaultWindow)
+        if let first = file.samples.first, first.date < cutoff { file.samples.removeAll { $0.date < cutoff } }
+        if file.samples.count > sampleLimit { file.samples.removeFirst(file.samples.count - sampleLimit) }
+        return true
+    }
+
     // MARK: Analysis
+
+    private static func median(_ values: [Int]) -> Int? {
+        values.isEmpty ? nil : values.sorted()[values.count / 2]
+    }
+
+    /// At most `limit` points, evenly spaced, always keeping the last.
+    private static func thinned(_ points: [(date: Date, value: Int)], limit: Int = 240) -> [(date: Date, value: Int)] {
+        guard points.count > limit, let last = points.last else { return points }
+        let step = Double(points.count) / Double(limit)
+        return (0..<limit).map { points[Int(Double($0) * step)] } + [last]
+    }
 
     static func bayList(_ bays: [Int]) -> String {
         let names = bays.sorted().map { $0 < 8 ? "\($0 + 1)" : "SSD" }
@@ -208,6 +311,13 @@ final class BayHistory: ObservableObject {
         report.since = file.changes.first?.date
         report.restarts = file.restarts.filter { $0 >= cutoff }
         let boot = file.restarts.count
+        let samples = file.samples.filter { $0.date >= cutoff }
+        var onsets: [BayChange] = []
+
+        let enclosure = samples.compactMap { sample in sample.enclosure.map { (date: sample.date, value: $0) } }
+        report.enclosureTemperatures = thinned(enclosure)
+        report.enclosureLow = enclosure.map(\.value).min()
+        report.enclosureHigh = enclosure.map(\.value).max()
 
         for bay in Set(file.changes.map(\.bay)).sorted() {
             let all = file.changes.filter { $0.bay == bay }
@@ -228,6 +338,7 @@ final class BayHistory: ObservableObject {
                         open = current
                     } else {
                         open = (BayEpisode(start: change.date, worstCode: change.statusCode), change.boot)
+                        if change.date >= cutoff { onsets.append(change) }
                     }
                 } else if var current = open {
                     current.episode.end = change.date
@@ -272,7 +383,47 @@ final class BayHistory: ObservableObject {
                 analysis.summary = "No problems recorded."
             }
             if analysis.errorRise > 0 { analysis.summary += " Error count up by \(analysis.errorRise)." }
+
+            let readings = samples.compactMap { sample in sample.drives[bay].map { (date: sample.date, value: $0) } }
+            analysis.temperatures = thinned(readings)
+            analysis.temperatureLow = readings.map(\.value).min()
+            analysis.temperatureHigh = readings.map(\.value).max()
+            if latest.statusCode != 0x80 { analysis.temperatureNow = readings.last?.value }
             report.bays.append(analysis)
+        }
+
+        // Temperature at each flagging. A drive that has just been dropped may report none, so
+        // fall back on the last sample from shortly before.
+        for onset in onsets {
+            let near = file.samples.last { $0.date <= onset.date && onset.date.timeIntervalSince($0.date) <= 900 }
+            guard let temperature = onset.temperature ?? near?.drives[onset.bay] else { continue }
+            var reading = FaultReading(bay: onset.bay, date: onset.date, temperature: temperature)
+            reading.usual = median(samples.compactMap { $0.drives[onset.bay] })
+            reading.others = near.flatMap { sample in median(sample.drives.filter { $0.key != onset.bay }.map(\.value)) }
+            report.faultReadings.append(reading)
+        }
+        let hot = report.faultReadings.filter(\.isHot)
+        if let worst = hot.max(by: { $0.temperature < $1.temperature }) {
+            report.heatSuspected = true
+            var detail: [String] = []
+            if let usual = worst.usual, usual != worst.temperature { detail.append("usually \(usual) °C") }
+            if let others = worst.others { detail.append("the other drives were at \(others) °C") }
+            report.heatNote = "Heat may be involved. \(bayList([worst.bay])) was at \(worst.temperature) °C when it was flagged"
+                + (detail.isEmpty ? "." : " (" + detail.joined(separator: "; ") + ").")
+            if hot.count > 1 { report.heatNote += " \(hot.count) of \(report.faultReadings.count) flaggings happened hot." }
+        } else if !report.faultReadings.isEmpty {
+            let values = report.faultReadings.map(\.temperature)
+            let low = values.min() ?? 0, high = values.max() ?? 0
+            let range = low == high ? "\(low) °C" : "\(low)–\(high) °C"
+            let count = report.faultReadings.count
+            report.heatNote = "Heat looks unlikely. \(count == 1 ? "The flagged drive was" : "Flagged drives were") at \(range) when flagged, no hotter than usual and no hotter than the other drives."
+        }
+        // Whatever the faults say, a drive that is hot right now is worth knowing about.
+        if let latest = samples.last, now.timeIntervalSince(latest.date) < 1800,
+           let hottest = latest.drives.max(by: { $0.value < $1.value }), hottest.value >= hotDrive {
+            report.heatSuspected = true
+            report.heatNote += (report.heatNote.isEmpty ? "" : " ")
+                + "\(bayList([hottest.key])) is at \(hottest.value) °C now. Most drives are rated to about 60 °C; check the fans and vents."
         }
 
         // What the bays have in common.
@@ -333,6 +484,23 @@ extension BayHistoryFile {
         add(-3.5, 4, 5, errors: 9); add(-3.4, 1, 5); add(-3.19, 4, 3, errors: 9); add(-3.19, 1, 3)
         if rebuilding { add(-0.2, 2, 4, errors: 14) }
         file.changes.sort { $0.date < $1.date }
+        // Temperatures: a daily swing, with bay 5 running warm before each time it was flagged.
+        let flagged = [-9.9, -6.6, -3.5]
+        for step in stride(from: -13.5 * day, through: 0, by: 3600) {
+            let offset = step / day
+            let swing = sin(offset * 2 * .pi) * 2
+            var entry = ThermalSample(date: now.addingTimeInterval(step), enclosure: Int((31 + swing).rounded()), fans: [3, 3])
+            for bay in 0..<6 {
+                var value = 33 + Double((bay * 7) % 9) + swing
+                if bay == 4, flagged.contains(where: { offset > $0 - 0.5 && offset < $0 + 0.3 }) { value += 12 }
+                entry.drives[bay] = Int(value.rounded())
+            }
+            file.samples.append(entry)
+        }
+        for index in file.changes.indices where file.changes[index].isFault {
+            let change = file.changes[index]
+            file.changes[index].temperature = file.samples.last { $0.date <= change.date }?.drives[change.bay]
+        }
         return file
     }
 }
