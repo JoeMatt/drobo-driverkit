@@ -59,6 +59,7 @@ struct ContentView: View {
                         case .volumes: volumesTab
                         case .events:
                             VStack(spacing: 14) {
+                                if !dashboard.droboLog.isEmpty { DroboLogSummaryCard(entries: dashboard.droboLog) }
                                 DroboLogCard(model: dashboard)
                                 EventsTab(log: dashboard.events)
                             }

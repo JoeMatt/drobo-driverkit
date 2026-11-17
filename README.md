@@ -24,7 +24,10 @@ for the direct-attached Thunderbolt units.
   Drive and enclosure temperatures are kept alongside, so it can say whether a drive was
   running hot when it was flagged.
 - **The Drobo's own event log**, read on request: power events, drive errors and rebuilds the
-  unit recorded itself. Built from analysis and not yet confirmed on a Drobo.
+  unit recorded itself. Built from analysis and not yet confirmed on a Drobo. The app
+  sums it up: how full the Drobo has been over the years, unexpected power losses, rebuilds and
+  how long they took, the speed of its periodic health check, and for each bay which drive has
+  been in it since when and what was logged against it.
 - **Alerts** as notifications and, optionally, to a webhook. They include a temperature
   warning when the enclosure runs well above its usual reading (and per-drive and fan warnings
   on models that report those; the 8D reports neither), and an optional hourly check of the
@@ -84,6 +87,8 @@ drobo get percent           # one bare value; `drobo keys` lists them
 drobo all --json            # for dashboards
 drobo --watch 5             # redraw every 5 seconds
 drobo log                   # the Drobo's own event log, as last read in the app
+drobo log --summary         # what it adds up to: power losses, rebuilds, each bay's drive and problems
+drobo log --bay 6 --problems   # one bay's warnings
 drobo history               # each bay over 14 days, and what the pattern suggests
 drobo diagnostics > d.json  # raw driver state for a bug report, serial and name removed
 drobo metrics               # Prometheus text format, for Grafana-style monitoring

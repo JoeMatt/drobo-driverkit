@@ -21,6 +21,8 @@ commands
   get <key>              one bare value, for scripts and status lines
   keys                   list the keys `get` accepts
   log                    the Drobo's own event log, as last read in the app (Events tab, Read from Drobo)
+                         --summary: what it adds up to (power losses, rebuilds, each bay's drive and problems)
+                         --problems: warnings and notable events only; --bay <1-8|ssd>: one bay's events
   history                each bay over the last 14 days: flagged, recovered, restarts, and what the pattern suggests
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
@@ -468,6 +470,9 @@ var short = false
 var watch: Double?
 var demo: String?
 var positional: [String] = []
+var summaryOnly = false
+var problemsOnly = false
+var baySlot: Int?
 
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -480,6 +485,18 @@ while !arguments.isEmpty {
             arguments.removeFirst()
         } else {
             watch = 2
+        }
+    case "--summary": summaryOnly = true
+    case "--problems": problemsOnly = true
+    case "--bay":
+        guard !arguments.isEmpty else { fail("--bay needs a bay: 1-8 or ssd") }
+        let name = arguments.removeFirst().lowercased()
+        if name == "ssd" {
+            baySlot = 8
+        } else if let number = Int(name), (1...8).contains(number) {
+            baySlot = number - 1
+        } else {
+            fail("--bay needs a bay: 1-8 or ssd")
         }
     case "--demo":
         guard !arguments.isEmpty else { fail("--demo needs healthy or rebuilding") }
@@ -557,7 +574,46 @@ func run() -> Int32 {
             FileHandle.standardError.write(Data("No log read yet. Open the app's Events tab and press Read from Drobo.\n".utf8))
             return 1
         }
-        let entries = DroboLog.parse(data)
+        var entries = DroboLog.parse(data)
+        if summaryOnly {
+            let summary = DroboLogSummary.make(entries)
+            if json {
+                let stamp = ISO8601DateFormatter()
+                var result: [String: Any] = [
+                    "events": summary.count,
+                    "powerOns": summary.powerOns,
+                    "unexpectedPowerLosses": summary.powerLosses.map { stamp.string(from: $0) },
+                    "internalErrors": summary.internalErrors.map { stamp.string(from: $0) },
+                    "overheating": summary.overheating.map { $0.text },
+                    "rebuilds": summary.rebuilds.map { rebuild -> [String: Any] in
+                        var row: [String: Any] = ["start": stamp.string(from: rebuild.start)]
+                        if let end = rebuild.end {
+                            row["end"] = stamp.string(from: end)
+                            row["seconds"] = Int(end.timeIntervalSince(rebuild.start))
+                        }
+                        return row
+                    },
+                    "healthChecks": summary.healthChecks.map { ["date": stamp.string(from: $0.date), "mebibytesPerSecond": $0.speed] as [String: Any] },
+                    "usedPercent": summary.capacity.map { ["date": stamp.string(from: $0.date), "percent": $0.usedPercent] as [String: Any] },
+                    "bays": summary.bays.map { bay -> [String: Any] in
+                        var row: [String: Any] = ["bay": bay.name, "drives": bay.drives.count, "problems": bay.problems.map { $0.text }]
+                        if let drive = bay.drives.last {
+                            row["capacity"] = drive.capacity
+                            row["since"] = stamp.string(from: drive.firstSeen)
+                        }
+                        return row
+                    },
+                ]
+                if let first = summary.first { result["from"] = stamp.string(from: first) }
+                if let last = summary.last { result["to"] = stamp.string(from: last) }
+                printJSON(result)
+            } else {
+                print(summary.lines().joined(separator: "\n"))
+            }
+            return 0
+        }
+        if let baySlot { entries = entries.filter { $0.slot == baySlot } }
+        if problemsOnly { entries = entries.filter { $0.severity > 0 || !$0.isKnown } }
         if json {
             var rows: [[String: Any]] = []
             for entry in entries {
