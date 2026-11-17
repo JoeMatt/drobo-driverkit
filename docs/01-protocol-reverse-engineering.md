@@ -971,6 +971,27 @@ First read on hardware, driver v0.29.0, firmware 4.2.3. **[obs]**
 - The log is oldest first, about 32 KiB per five months on this unit, so a full log is well
   past the old 256 KiB limit. The limit is now 64 chunks (2 MiB).
 
+### 11.19 Drive-level calls in Dashboard that this project does not send (2026-11-17)
+
+From `DDService64d`, by disassembly only. **None of these has been sent to a Drobo.**
+
+- `ESASCSISession::insertRemoveDrive(bool, int, int*)` @ `0x1000a92fa`: MODE SENSE(10)
+  `5A 08 3A <E1 insert | E2 remove> <slot> 00 00 00 08 00`, 8 bytes in, a u32 result at
+  offset 4. Reached from the service commands `eCmdInsertDrive` / `eCmdRemoveDrive` with a slot
+  number from the request; the service does not check demo mode first. The UI binary has the
+  command names but no screen that sends them; the only related screen is the demo-mode dialog,
+  so this is most likely the demonstration feature (pretend a drive was pulled) **[inf]**.
+  What the firmware does with it on a real disk pack, or to a drive marked failed, is unknown.
+- `ESASCSISession::getATAIdentify` @ `0x1000a7ae8` (`ESAATAIdentifyWithInquiry`): takes no slot
+  number and is only called from `getDeviceSerial` for one connection type. It reads the
+  Drobo's own identity, not a member drive's.
+- `ESASCSISession::runEsaCommand(u16, u8*, Buffer&)` @ `0x1000a8bcc`: system operation `0x0A`,
+  data-out, the caller's bytes as payload, then a read of up to 0x800 bytes. The service passes
+  through a `Params` string from the request (`eCmdRunESACommand`). No command strings are in
+  either binary, and the UI has no screen for it: a support hook.
+- No request in either binary is named for clearing a failed drive, retrying a drive, or
+  reading S.M.A.R.T. data or self-test results.
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
