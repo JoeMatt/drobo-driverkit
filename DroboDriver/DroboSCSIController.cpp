@@ -100,6 +100,8 @@ static const uint32_t kShellMaxChunks  = 2048;      // 4 MiB: reads go on past k
                                                     // output is drained, but not for ever
 static const uint32_t kShellTimeoutMS  = 120000;    // the Drobo answers a read when the command has run
 static const uint32_t kShellConfirm    = 0xD0B0;    // high 16 bits of the argument for guarded commands
+static const uint32_t kShellFreshMS    = 15000;     // how old the slot and status pages may be for a per-bay command
+static const uint32_t kShellSettleMS   = 60000;     // no second per-bay command this soon after one
 
 // What a shell command may do, and so what has to be true before it is sent.
 enum : uint32_t {
@@ -301,6 +303,12 @@ struct DroboSCSIController_IVars
     uint32_t                   shellSlot;
     uint32_t                   shellLastSRB;
     bool                       shellReading;        // false while the command text is being sent
+    uint32_t                   shellKind;           // kind of the command in flight (kShell...)
+    // When the slot page and the status page were last read (0: not since the last per-bay
+    // command, or the last read failed). ShellPermitted trusts them only while they are fresh.
+    uint64_t                   slotsReadTime;
+    uint64_t                   statusReadTime;
+    uint64_t                   shellSettleUntil;    // no per-bay command before this time
     bool                       shellTruncated;      // output was longer than kShellMax
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
@@ -1354,6 +1362,16 @@ ShellPermitted(const DroboSCSIController_IVars * iv, const DroboShellCommand * c
     if (slot > 7 || iv->healthLength[6] < 8 || slotsLength < 5) {
         return kIOReturnNotPermitted;
     }
+    // Both pages must have been read recently, and since the last per-bay command: that
+    // command may have changed exactly what is checked here (a second expunge straight after
+    // the first would otherwise pass on the old "protected" flags), and polling stops while a
+    // shell command or a log read runs.
+    const uint64_t now = mach_absolute_time();
+    const uint64_t fresh = (uint64_t) kShellFreshMS * iv->ticksPerMillisecond;
+    if (iv->slotsReadTime == 0 || iv->statusReadTime == 0 ||
+        now - iv->slotsReadTime > fresh || now - iv->statusReadTime > fresh || now < iv->shellSettleUntil) {
+        return kIOReturnNotPermitted;
+    }
     const uint32_t flags = BE32(iv->healthData[6] + 4);
     bool found = false;
     uint8_t status = 0;
@@ -1565,6 +1583,10 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                     result = kIOReturnUnsupported;
                     break;
                 }
+                if (chosen->kind >= kShellPowerCycle && mach_absolute_time() < iv->healthHoldUntil) {
+                    result = kIOReturnBusy;         // it could not go out now, and must not go out later
+                    break;
+                }
                 result = ShellPermitted(iv, chosen, slot, confirm);
                 if (result != kIOReturnSuccess) {
                     break;
@@ -1594,6 +1616,7 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                 iv->commandLength    = length;
                 iv->commandOperation = 0x0A;
                 iv->shellReading   = false;
+                iv->shellKind      = chosen->kind;
                 iv->shellLength    = 0;
                 iv->shellChunks    = 0;
                 iv->shellTruncated = false;
@@ -2476,6 +2499,32 @@ DroboSCSIController::HealthSend()
         return false;                               // previous request not consumed yet
     }
 
+    if (isCommand && iv->commandOperation == 0x0A && !iv->shellReading && iv->shellKind >= kShellPowerCycle) {
+        // A per-bay command is checked again at the moment it goes out: it may have waited
+        // here (channel busy), and the bay may not be what it was when the app asked. If the
+        // pages are no longer fresh or no longer allow it, it is dropped, never sent late.
+        const DroboShellCommand * chosen = nullptr;
+        for (uint32_t i = 0; i < sizeof(kShellCommands) / sizeof(kShellCommands[0]); i++) {
+            if (kShellCommands[i].identifier == iv->shellCommand) {
+                chosen = &kShellCommands[i];
+            }
+        }
+        if (chosen == nullptr || chosen->kind != iv->shellKind ||
+            ShellPermitted(iv, chosen, iv->shellSlot, kShellConfirm) != kIOReturnSuccess) {
+            iv->commandPending = false;
+            iv->commandOperation = 0;
+            iv->shellState = 3;
+            iv->shellLastSRB = 0xFFFFFFFE;          // refused here, nothing sent
+            PublishStatus(this, iv);
+            return false;
+        }
+        // The pages are now used up: the next per-bay command needs new ones, read after
+        // this one has had time to show in them.
+        iv->slotsReadTime = 0;
+        iv->statusReadTime = 0;
+        iv->shellSettleUntil = mach_absolute_time() + (uint64_t) kShellSettleMS * iv->ticksPerMillisecond;
+    }
+
     const uint8_t  page   = isCommand ? 0 : kHealthPages[iv->healthPage];
     const uint32_t length = isCommand ? iv->commandLength : HealthPageLength(iv, page);
     uint8_t * memory = iv->requestVA + kHealthSlot * kDroboSlotSize;
@@ -2677,6 +2726,11 @@ DroboSCSIController::HealthResponse()
         }
         memcpy(iv->healthData[index], iv->requestVA + kHealthDataOffset, length);
         iv->healthLength[index] = length;
+        if (index == 2) {
+            iv->slotsReadTime = mach_absolute_time();
+        } else if (index == 6) {
+            iv->statusReadTime = mach_absolute_time();
+        }
         // The config page gives the real slot count for the slot-info page.
         if (kHealthPages[index] == 0x01 && length >= 5) {
             const uint8_t slots = iv->healthData[index][4];
@@ -2686,6 +2740,11 @@ DroboSCSIController::HealthResponse()
         }
     } else {
         iv->healthErrors++;
+        if (index == 2) {
+            iv->slotsReadTime = 0;                  // the old copy no longer vouches for a per-bay command
+        } else if (index == 6) {
+            iv->statusReadTime = 0;
+        }
         if (index >= kHealthFirstOptional) {
             // The Drobo refused this optional page: stop asking for it, keep everything else.
             iv->extendedFailedMask |= 1u << index;

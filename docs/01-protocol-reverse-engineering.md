@@ -1154,7 +1154,10 @@ question left open in 11.17.
 "Protected and at rest" means none of the status flags bad disk, too many missing, no
 redundancy, rebuilding, formatting (page `09`). The light is the bay status byte of page `03`.
 The driver makes these checks itself from the pages it last read (`ShellPermitted`); the app
-makes them too, to say why a button is off. That the shell's slot number equals the slot id in
+makes them too, to say why a button is off. The two pages must be newer than 15 s and read
+since the last per-bay command; the check is repeated at the moment the command goes out, and
+a command that fails it then is dropped (`ShellSRB` `0xFFFFFFFE`), never sent late; and a
+minute must pass between two per-bay commands. That the shell's slot number equals the slot id in
 page `03` is **[inf]** (both count from 0 and both put the SSD bay at 8), and the checks rest
 on it; the app therefore keeps the per-bay commands off until a read-only command has been
 answered, whose output lists the drives by slot. Slots 0 to 7 only: what these commands do to the

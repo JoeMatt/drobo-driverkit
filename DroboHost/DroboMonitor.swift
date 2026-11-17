@@ -654,7 +654,7 @@ enum DroboMonitor {
         case KERN_SUCCESS: return nil
         case kIOReturnBusy: return "The Drobo is busy. Eject its volumes and try again."
         case kIOReturnNotReady: return "The Drobo is not ready yet."
-        case kIOReturnNotPermitted: return "The driver refused: the Drobo's own status does not allow this command on that bay now."
+        case kIOReturnNotPermitted: return "The driver refused: the Drobo's own status does not allow this command on that bay now, or that status is not fresh (it must be newer than 15 seconds, and a minute must pass after another per-bay command). Nothing was sent."
         case kIOReturnNotPrivileged: return "The driver refused: the command was not confirmed."
         default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
         }
