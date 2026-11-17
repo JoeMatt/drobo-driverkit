@@ -402,6 +402,8 @@ struct ContentView: View {
                 if let uptime = snapshot.uptime, uptime > 0 { row("clock", "Uptime", Self.uptimeText(uptime)) }
                 if !snapshot.fanLevels.isEmpty {
                     row("fan", "Fans", snapshot.fanLevels.map { "level \($0)" }.joined(separator: ", "))
+                } else if snapshot.extendedEnabled, snapshot.systemTemperature != nil {
+                    row("fan", "Fans", "Not reported by this Drobo")
                 }
                 if let yellow = snapshot.yellowThreshold, let red = snapshot.redThreshold {
                     row("gauge.with.dots.needle.33percent", "Capacity alerts", "\(yellow)% and \(red)%")

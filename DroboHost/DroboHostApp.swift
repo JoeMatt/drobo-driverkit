@@ -244,6 +244,16 @@ final class DashboardModel: ObservableObject {
     @Published var droboLogStatus = ""
     private var droboLogRequested = false
     private var droboLogLoadedLength = -1
+    private var droboLogAutomatic = false
+    private var droboLogLastCheck = Date()
+
+    /// Re-read the Drobo's log every hour and alert on new warnings. Off until a read has worked.
+    static let logAutoKey = "droboLogAutoCheck"
+    /// Set once the Drobo has returned a log this app could read.
+    static let logWorksKey = "droboLogReadWorks"
+    /// Time of the newest log entry already seen, so only later ones alert.
+    static let logSeenKey = "droboLogSeenUntil"
+    static let logCheckInterval: TimeInterval = 3600
     let performance = PerformanceHistory()
 
     private var timer: Timer?
@@ -385,6 +395,14 @@ final class DashboardModel: ObservableObject {
         luns = DroboMonitor.luns(latest, volumes: volumes)
         events.observe(previous: previous, latest: latest, previousLUNs: previousLUNs, latestLUNs: luns)
         bays.record(latest, now: now)
+        let thermal = bays.thermalAlerts(latest).map {
+            DroboEvent(date: now, level: $0.severity == 2 ? .critical : ($0.severity == 1 ? .warning : .good), title: $0.title, detail: $0.detail)
+        }
+        if !thermal.isEmpty {
+            for event in thermal { events.add(event.level, event.title, event.detail, date: now) }
+            Alerts.deliver(thermal)
+        }
+        checkDroboLog(latest, now: now)
         syncDroboLog(latest)
         syncExtended(latest)
         // Keep icons this app set earlier in step with how full each volume is.
@@ -480,15 +498,59 @@ final class DashboardModel: ObservableObject {
         }
     }
 
+    /// The hourly automatic read, when it is switched on and a read has worked before.
+    private func checkDroboLog(_ latest: DroboSnapshot, now: Date) {
+        let defaults = UserDefaults.standard
+        guard Demo.scenario == nil, defaults.bool(forKey: Self.logAutoKey), defaults.bool(forKey: Self.logWorksKey) else { return }
+        guard latest.ready, latest.healthAvailable, latest.eventLogAvailable, latest.eventLogState != 1, !droboLogRequested else { return }
+        guard now.timeIntervalSince(droboLogLastCheck) >= Self.logCheckInterval else { return }
+        droboLogLastCheck = now
+        if DroboMonitor.send(.readLog) == nil {
+            droboLogRequested = true
+            droboLogAutomatic = true
+        }
+    }
+
+    /// Events and one alert for log entries newer than any seen before. The first log ever read
+    /// only sets the mark: its entries are history, shown in the list, not news.
+    private func alertOnNewLogEntries() {
+        let defaults = UserDefaults.standard
+        let dated = droboLog.compactMap { entry in entry.date.map { (entry: entry, date: $0) } }
+        guard let newest = dated.map(\.date).max() else { return }
+        let seen = defaults.double(forKey: Self.logSeenKey)
+        defaults.set(newest.timeIntervalSince1970, forKey: Self.logSeenKey)
+        guard seen > 0 else { return }
+        let fresh = dated.filter { $0.date.timeIntervalSince1970 > seen && ($0.entry.severity >= 2 || DroboLog.critical.contains($0.entry.code)) }
+        guard !fresh.isEmpty else { return }
+        var produced: [DroboEvent] = []
+        for item in fresh.sorted(by: { $0.date < $1.date }).suffix(8) {
+            let level: DroboEvent.Level = DroboLog.critical.contains(item.entry.code) ? .critical : .warning
+            let detail = "From the Drobo's own log, \(item.date.formatted(date: .abbreviated, time: .shortened))."
+            events.add(level, item.entry.text, detail)
+            produced.append(DroboEvent(date: Date(), level: level, title: item.entry.text, detail: detail))
+        }
+        Alerts.deliver(produced)
+    }
+
     private func syncDroboLog(_ latest: DroboSnapshot) {
         if droboLogRequested, latest.eventLogState == 3 {
             droboLogRequested = false
+            if droboLogAutomatic {
+                // One unanswered read pauses status updates for two minutes; do not repeat it hourly.
+                droboLogAutomatic = false
+                UserDefaults.standard.set(false, forKey: Self.logAutoKey)
+                droboLogStatus = "The Drobo did not answer the hourly log check, so hourly checks are now off. Status polling carries on."
+                events.add(.warning, "Hourly Drobo log check turned off", "The Drobo did not answer one, so no more are sent until it is switched back on.")
+                return
+            }
             droboLogStatus = "The Drobo did not return its log. Status polling carries on; nothing else was affected."
             return
         }
         // Also picks up a log the driver already holds when the app starts.
         guard latest.eventLogState == 2, latest.eventLogLength != droboLogLoadedLength || droboLogRequested else { return }
         droboLogRequested = false
+        droboLogAutomatic = false
+        droboLogLastCheck = Date()
         droboLogLoadedLength = latest.eventLogLength
         guard latest.eventLogLength > 0, let data = DroboLog.fetch(length: latest.eventLogLength) else {
             droboLog = []
@@ -499,6 +561,10 @@ final class DashboardModel: ObservableObject {
         droboLogStatus = droboLog.isEmpty
             ? "The Drobo answered (\(data.count) bytes) but no line was in the expected format. Save diagnostics and report it."
             : "\(droboLog.count) events, read \(Date().formatted(date: .omitted, time: .shortened))"
+        if !droboLog.isEmpty {
+            UserDefaults.standard.set(true, forKey: Self.logWorksKey)
+            alertOnNewLogEntries()
+        }
     }
 
     func readDimLevel() {

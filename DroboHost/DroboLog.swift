@@ -39,6 +39,10 @@ struct DroboLogEntry: Identifiable {
 }
 
 enum DroboLog {
+    /// Entries the hourly check raises as critical, whatever Dashboard graded them: overheating,
+    /// a failed or missing drive, a forced restart.
+    static let critical: Set<Int> = [212, 216, 219, 228, 229, 232, 655]
+
     static let table: [Int: (severity: Int, text: String)] = [
         100: (0, "Powered on. Firmware {VERSION}"),
         101: (1, "Powered off with the switch"),

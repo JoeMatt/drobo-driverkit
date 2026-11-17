@@ -43,7 +43,11 @@ struct BayHistoryCard: View {
         var text = "Last \(days) days. "
         text += restarts == 0 ? "No Drobo restarts seen" : "\(restarts) Drobo restart\(restarts == 1 ? "" : "s") seen (white marks)"
         if let since = report.since { text += ". Recording since \(since.formatted(date: .abbreviated, time: .shortened))" }
-        if report.bays.contains(where: { !$0.temperatures.isEmpty }) { text += ". The line under each bay is its drive temperature" }
+        if report.bays.contains(where: { !$0.temperatures.isEmpty }) {
+            text += ". The line under each bay is its drive temperature"
+        } else if !report.enclosureTemperatures.isEmpty {
+            text += ". This Drobo does not report drive temperatures, only the enclosure's"
+        }
         return text + ". Covers only the time this app was running."
     }
 

@@ -25,7 +25,10 @@ for the direct-attached Thunderbolt units.
   running hot when it was flagged.
 - **The Drobo's own event log**, read on request: power events, drive errors and rebuilds the
   unit recorded itself. Built from analysis and not yet confirmed on a Drobo.
-- **Alerts** as notifications and, optionally, to a webhook.
+- **Alerts** as notifications and, optionally, to a webhook. They include a temperature
+  warning when the enclosure runs well above its usual reading (and per-drive and fan warnings
+  on models that report those; the 8D reports neither), and an optional hourly check of the
+  Drobo's own log for new warnings such as a drive overheating.
 - **`drobo`**, a read-only command for scripts, status lines and Prometheus-style monitoring.
 
 | Drives | Menu bar (hold Option for more) |

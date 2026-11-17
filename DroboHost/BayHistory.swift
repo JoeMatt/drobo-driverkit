@@ -120,6 +120,14 @@ struct FaultReading {
     }
 }
 
+/// A temperature or fan condition starting, getting worse, or ending.
+struct ThermalAlert {
+    /// 0 back to normal, 1 warning, 2 critical.
+    let severity: Int
+    let title: String
+    let detail: String
+}
+
 struct BayHistoryFile: Codable {
     var changes: [BayChange] = []
     var restarts: [Date] = []
@@ -158,6 +166,18 @@ final class BayHistory: ObservableObject {
     static let hotDrive = 50
     /// Degrees above its own usual reading, or above the other drives, that counts as hot.
     static let hotMargin = 8
+    static let criticalDrive = 58
+    /// The enclosure sensor sits away from the drives and reads much lower than they do, so its
+    /// limits are lower, and a rise above its own usual reading matters more than either.
+    static let warmEnclosure = 45
+    static let criticalEnclosure = 55
+    /// Degrees a reading must fall below a limit before the condition counts as over.
+    static let hysteresis = 3
+
+    /// Conditions in force, by name, with their severity.
+    private var thermalState: [String: Int] = [:]
+    private var enclosureUsual: Int?
+    private var fanCount = 0
     private var wasReady: Bool?
     private var lastHeadline = ""
 
@@ -279,10 +299,73 @@ final class BayHistory: ObservableObject {
         }
         guard entry.enclosure != nil || !entry.drives.isEmpty else { return false }
         file.samples.append(entry)
+        // "Usual" needs a fair stretch of readings behind it before a rise above it means much.
+        let enclosure = file.samples.compactMap(\.enclosure)
+        if let first = file.samples.first, now.timeIntervalSince(first.date) >= 6 * 3600, enclosure.count >= 50 {
+            enclosureUsual = Self.median(enclosure)
+        }
         let cutoff = now.addingTimeInterval(-Self.defaultWindow)
         if let first = file.samples.first, first.date < cutoff { file.samples.removeAll { $0.date < cutoff } }
         if file.samples.count > sampleLimit { file.samples.removeFirst(file.samples.count - sampleLimit) }
         return true
+    }
+
+    // MARK: Temperature and fan warnings
+
+    /// Called once per poll, after `record`. Returns what has just started, worsened or ended.
+    /// Works from whatever the Drobo reports: some models give no drive temperatures or no fan
+    /// page, and then only the enclosure reading is watched.
+    func thermalAlerts(_ snapshot: DroboSnapshot) -> [ThermalAlert] {
+        guard snapshot.ready, snapshot.healthAvailable else { return [] }
+        var alerts: [ThermalAlert] = []
+
+        func judge(_ key: String, _ value: Int, warn: Int, critical: Int, name: String, advice: String) {
+            let before = thermalState[key] ?? 0
+            var level = value >= critical ? 2 : (value >= warn ? 1 : 0)
+            // Hold the earlier level until the reading is clearly below its limit.
+            if level < before {
+                let limit = before == 2 ? critical : warn
+                if value > limit - Self.hysteresis { level = before }
+            }
+            guard level != before else { return }
+            thermalState[key] = level
+            if level > before {
+                alerts.append(ThermalAlert(severity: level, title: "\(name) is at \(value) °C", detail: advice))
+            } else if level == 0 {
+                alerts.append(ThermalAlert(severity: 0, title: "\(name) is back to \(value) °C", detail: ""))
+            }
+        }
+
+        if let enclosure = snapshot.systemTemperature {
+            var warn = Self.warmEnclosure
+            var note = "Check that the fans are turning and that air is coming out of the back."
+            if let usual = enclosureUsual, usual + Self.hotMargin < warn {
+                warn = usual + Self.hotMargin
+                note = "It usually reads about \(usual) °C. " + note
+            }
+            judge("enclosure", enclosure, warn: warn, critical: max(Self.criticalEnclosure, warn + 5), name: "The Drobo's enclosure", advice: note)
+        }
+        for slot in snapshot.slots where !slot.isEmpty {
+            guard let temperature = slot.temperature else { continue }
+            judge("bay\(slot.id)", temperature, warn: Self.hotDrive, critical: Self.criticalDrive,
+                  name: "The drive in \(Self.bayList([slot.id]).lowercased())",
+                  advice: "Most drives are rated to about 60 °C. Check the fans and the airflow around the Drobo.")
+        }
+        // A fan that stops reporting a speed, on models that report fans at all.
+        let fans = snapshot.fanLevels.count
+        if fans > 0 || fanCount > 0 {
+            let before = thermalState["fans"] ?? 0
+            let level = fans < fanCount ? 1 : 0
+            if level != before {
+                thermalState["fans"] = level
+                alerts.append(level == 1
+                    ? ThermalAlert(severity: 1, title: "A fan has stopped reporting a speed",
+                                   detail: "\(fans) of \(fanCount) fans report a speed now. Check that they are all turning.")
+                    : ThermalAlert(severity: 0, title: "All fans report a speed again", detail: ""))
+            }
+            fanCount = max(fanCount, fans)
+        }
+        return alerts
     }
 
     // MARK: Analysis

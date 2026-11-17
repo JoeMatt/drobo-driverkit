@@ -6,6 +6,8 @@ struct DroboLogCard: View {
     @ObservedObject var model: DashboardModel
     @State private var confirmRead = false
     @State private var problemsOnly = true
+    @AppStorage(DashboardModel.logAutoKey) private var checkHourly = false
+    @AppStorage(DashboardModel.logWorksKey) private var readWorks = false
 
     private var shown: [DroboLogEntry] {
         let entries = problemsOnly ? model.droboLog.filter { $0.severity > 0 || !$0.isKnown } : model.droboLog
@@ -49,6 +51,12 @@ struct DroboLogCard: View {
                             if entry.id != shown.last?.id { Rectangle().fill(Theme.hairline).frame(height: 1) }
                         }
                     }
+                }
+                if readWorks {
+                    Toggle("Check every hour and alert on new warnings", isOn: $checkHourly)
+                        .toggleStyle(.switch).controlSize(.mini)
+                        .font(Theme.text(11.5)).foregroundStyle(Theme.secondary)
+                        .help("Re-reads this log hourly. The Drobo records drive overheating, drive errors and power trouble here, including things it does not report any other way")
                 }
                 if !model.droboLogStatus.isEmpty {
                     Text(model.droboLogStatus)
