@@ -1015,6 +1015,29 @@ All four are system operations in the data-out form this driver already uses for
   up yet (`ESALUNInfo2Struct`, the object field at `+0x6a`).
 - The Drobo's own log records a delete as event 500 and the space coming back as 501.
 
+### 11.21 The 8D firmware image, first look (2026-11-17)
+
+`release.Drobo8D.4-2-3.tdf`, 20 MB, read as a file only; not included in this repository.
+
+- Not encrypted and not compressed as a whole. A `TDIH` header ("Data Robotics Firmware",
+  product name "Gerty"), then two 32-bit little-endian ARM executables at `0x22c` and
+  `0x2d815c` (the first is named `runesa.vxe`), VxWorks. Text is readable with `strings`.
+- **A failed drive is "expunged"**, by the firmware's Error Policy Manager. Its messages name
+  the limits that trigger it: hard error limit, hard error rate, short-timeout limit, drive
+  start failures, and a limit on how often it power-cycled the slot. The numbers are not in
+  the text. A drive that answers too slowly can be expunged without one bad sector **[inf]**.
+- The expunge is remembered in the disk pack's own metadata ("EPM METADATA", zone 0), and the
+  pack manager refuses the drive afterwards ("Refusing EXPUNGED slot", "EPM forces add
+  refusal"). A drive with no Drobo header on it is "made available for re-use".
+- The firmware has a command shell. Commands seen in its help text include `SmartStatus
+  [0|1|2]`, `SMART-Test [slot]`, `SlotPowerCycle <slot> [epm]`, `SystemState <manager>`
+  (one of the managers is `ErrorPolicy`), `PerfStats`, `metacheck int|ext`, and destructive
+  ones (`esa wipeDisk <slot>`, an expunge command, `cleardisk`, deliberate crash).
+- The shell is reachable from the host: the firmware calls it `esaPassthroughCommand`, which
+  is what Dashboard's `runEsaCommand` (system operation `0x0A`, 11.19) feeds. So a host could
+  ask for `SmartStatus` or the Error Policy Manager's state and read the text back. The
+  request and reply framing still has to be decoded on both sides. **Nothing sent.**
+
 ## 12. Open questions that need the hardware
 
 1. ~~Which config-space BARs back "device memory 0/1".~~ Answered in section 11: BAR0 and BAR2.
