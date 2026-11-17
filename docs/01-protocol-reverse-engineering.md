@@ -955,7 +955,7 @@ was observed.
   gains `EventLogState` (0 never, 1 reading, 2 read, 3 failed, 4 no buffer), `EventLogLength`,
   `EventLogChunks`, `EventLogSRB`; `CommandFormat` is 4.
 - Times are parsed as Pacific time, as Dashboard does **[inf]**; bay numbers are shown as the
-  Drobo prints them, and whether they count from 0 or 1 is not known.
+  Drobo prints them, and whether they count from 0 or 1 is not known (from 0: see 11.22).
 - The app's event descriptions are this project's wording for ids 100 to 671. The NAS-only ids
   (1500 and up) are shown as numbers.
 
@@ -1021,7 +1021,9 @@ All four are system operations in the data-out form this driver already uses for
 
 - Not encrypted and not compressed as a whole. A `TDIH` header ("Data Robotics Firmware",
   product name "Gerty"), then two 32-bit little-endian ARM executables at `0x22c` and
-  `0x2d815c` (the first is named `runesa.vxe`), VxWorks. Text is readable with `strings`.
+  `0x2d815c`, VxWorks. Text is readable with `strings`. The first is the VxWorks kernel and
+  board support; the second lies inside the first and is the array application, which runs as
+  a VxWorks user process and keeps its symbol table (11.22).
 - **A failed drive is "expunged"**, by the firmware's Error Policy Manager. Its messages name
   the limits that trigger it: hard error limit, hard error rate, short-timeout limit, drive
   start failures, and a limit on how often it power-cycled the slot. The numbers are not in
@@ -1030,13 +1032,100 @@ All four are system operations in the data-out form this driver already uses for
   pack manager refuses the drive afterwards ("Refusing EXPUNGED slot", "EPM forces add
   refusal"). A drive with no Drobo header on it is "made available for re-use".
 - The firmware has a command shell. Commands seen in its help text include `SmartStatus
-  [0|1|2]`, `SMART-Test [slot]`, `SlotPowerCycle <slot> [epm]`, `SystemState <manager>`
-  (one of the managers is `ErrorPolicy`), `PerfStats`, `metacheck int|ext`, and destructive
-  ones (`esa wipeDisk <slot>`, an expunge command, `cleardisk`, deliberate crash).
+  [0|1|2]`, `SMART-Test [slot]`, `SlotPowerCycle <slot> [epm]`, `state <manager>`,
+  `PerfStats`, `metacheck int|ext`, and destructive ones (`esa wipeDisk <slot>`, an expunge
+  command, `cleardisk`, deliberate crash). (An earlier version of this note gave
+  `SystemState <manager>`: `SystemState` is the name of a section in the diagnostics file,
+  not a shell command. See 11.22.)
 - The shell is reachable from the host: the firmware calls it `esaPassthroughCommand`, which
-  is what Dashboard's `runEsaCommand` (system operation `0x0A`, 11.19) feeds. So a host could
-  ask for `SmartStatus` or the Error Policy Manager's state and read the text back. The
-  request and reply framing still has to be decoded on both sides. **Nothing sent.**
+  is what Dashboard's `runEsaCommand` (system operation `0x0A`, 11.19) feeds. Framing decoded
+  in 11.22. **Nothing sent.**
+
+### 11.22 The firmware shell over system operation `0x0A` (2026-11-17)
+
+Static analysis only: Dashboard 3.6.1's service (`DDService64d`) and the 8D firmware 4.2.3.
+**Nothing has been sent to a Drobo.** Firmware addresses below are in the second executable of
+the `.tdf` (file offset `0x2d815c`, linked at address 0, symbols intact).
+
+**Request and reply, from Dashboard** (`ESASCSISession::runEsaCommand` @ `0x1000a8bcc`, the
+CDB builder `ESASystemOperationRequest` @ `0x1000c56e4`). **[obs]**
+
+The CDB builder sets byte 6 from three flags: `0x40`, `0x20` and `0x01`. 11.14's `21` is
+`0x20 | 0x01`; this command never sets `0x01`. The service takes the command text from the
+request's `Params/ESACommand` string (`ESADevice::runEsaCommand` @ `0x100079912`) and sends
+its bytes, with no terminating zero and no newline.
+
+1. Send the command, data-out, length = text length:
+
+       EA 10 00 0A <seq> 00 20 <len16 BE> 00      + ASCII command text
+
+2. Read the answer, data-in, 2 KiB at a time, **with the same sequence number as step 1**
+   (the counter is read once, as for the event log in 11.18):
+
+       EA 10 80 0A <seq> 00 20 08 00 00           first read
+       EA 10 80 0A <seq> 00 00 08 00 00           every later read
+
+   Stop at the first chunk that comes back shorter than the one before it. The chunks joined
+   together are the shell's text output; Dashboard treats it as a C string and cuts it at the
+   first zero byte.
+
+**What the firmware does with it** (`HAManager::systemOperation` @ `0x143958`, case `0x0A`
+@ `0x144350`). **[obs]** unless marked.
+
+- One command at a time. The data-out request creates a `DebugProxy` (stored at
+  `HAManager + 0x92c`) and posts the text to the shell task's `/debugMsgQIn` queue
+  (`DebugProxy::sendRequest` @ `0x12df18`). Each data-in request collects output
+  (`DebugProxy::passData` @ `0x130b8c`), waiting for the shell task to finish if necessary,
+  with a timeout taken from the diagnostics manager's settings. The proxy is released when the
+  output has been handed out.
+- A second data-out while a proxy exists is refused ("unexpected sendRequest (another esa
+  cmd) REJECTED", status 9). A host must therefore always read every answer to the end. What
+  happens to a proxy whose reads stop half way is not known.
+- **The command length is not checked.** `sendRequest` copies as many bytes as CDB bytes 7–8
+  say into a message field of about 256 bytes (the whole message is 308 bytes) and writes a
+  zero after them. A host must keep commands well under 256 bytes.
+- **The firmware filters almost nothing.** Outside its internal "lab mode" it refuses only
+  text starting with `proc uboot` or `enableBrickOverride` (status 16). Every other command
+  runs, destructive ones included. Any restriction has to be enforced on the host, by exact
+  match against a fixed list. The firmware's own command handlers compare prefixes
+  (`strncmp`), so a prefix check on the host is not enough.
+- The text is split into words and run by `ConsoleCommand::ExecuteCommand`, the same command
+  table as the serial console (`DebugClass::esaPassthroughCommand` @ `0x15acc`). The word
+  `resume` is treated specially.
+- The diagnostics-file wrapper strings ("DataRobotics ... Data File Format") belong to a
+  different branch of `passData`, the one used for the locked-diagnostics operation `0x07`.
+  Whether a plain `0x0A` answer can ever carry that header was not traced **[inf: it does not]**.
+
+**Slot numbers.** The shell counts slots from 0, and slot 8 is the SSD bay (the slot loops run
+0–8). The event log does too: on this unit the 465 GiB SSD is logged as `SLOT_NUMBER="8"`. The
+app shows `slot + 1`, so the app's bays 6 and 8 are shell slots 5 and 7. This also answers the
+question left open in 11.17.
+
+**Commands that could be allowed, with what each one does:**
+
+| Command | Effect on 4.2.3 | Verdict |
+|---|---|---|
+| `state error` / `state error verbose` | `StateCommandHandler` @ `0x239f8` → `ErrorPolicy::Dump` @ `0xfac10`. Prints the expunge limits, each tracked drive's error counters (block errors, duplicates, region repairs, block rate, full, recovered, disk-start and short timeouts, flags), drives marked "NOT PHYSICALLY PRESENT", and global statistics. Takes a shared lock and reads memory only | Reads firmware memory only. This is where the counters behind an expunge are |
+| `state dpm`, `state list` | Disk pack manager state; the list of manager names (`dpm dud perflog z0it catm defrag catmscan hlbat bfc bgsched zmdt rmdt dlbat error hrm locks sched mem ham spmm cal scrub pack dsm`, plus `all`) | Read only. `all` may be long |
+| `SmartStatus [0\|1\|2]` | `getSMARTStatus` @ `0x12210` → `DiskManager::DumpSMARTStatus` @ `0x734a4`. For each slot set in the drive-ready bitmap it calls `SetSMARTOps(slot, 1)`, reads the SMART attributes, then `SetSMARTOps(slot, 0)`. Those are commands to the drive (an `ioctl` on the drive device) **[obs]**. The firmware's own health code does the same bracket (`DiskObject::Initialize`, `GetDrivesInfo`, `DiskPowerManager::Initialize`) **[obs]**. What `0` does on the drive is not decoded | Touches every ready drive. Drives that are not ready, such as expunged ones, are skipped **[inf]**. Not until every volume is copied off |
+| `SMART-Test [slot]` | `runSMARTTest` @ `0x12d44` → `DiskObject::RunSMARTTestWithResults` @ `0x84d10`, which **returns 0 and does nothing** on this firmware. `RunSMARTTest` and `GetSMARTTestResults` are the same stub | No use; leave out |
+| `SlotPowerCycle <slot> [epm]` | Power-cycles the slot. With `epm` it **first reports an error to the Error Policy Manager** (`ErrorPolicy::blockError`, type 10) | State-changing; never |
+
+**How an expunge is recorded** (relevant to whether a drive can be taken back). **[obs]**
+
+- `DiskPackManager::expungeLogicalDisk` @ `0xb2168` sets bit 31 of the drive's record flags
+  (offset `0x0c`), next to a 32-byte reason string. No code was found that clears that bit.
+- `ErrorPolicy::isDiskExpunged(slot)` @ `0xfeddc` maps the slot to the drive's identity
+  through the drive WWN map, then checks that identity's error tracker. The expunge mark
+  follows the **physical drive**, not the slot.
+- When a drive is added (`DiskPackManager::hotPlug` @ `0xadee0`), the firmware reads its
+  Drobo header (`discoverDis`), then refuses it if bit 31 of a record's flags word is set
+  ("Refusing EXPUNGED slot"; the same bit as above **[inf]**). On the path for a drive that
+  belongs to this pack it also asks `isDiskExpunged` **[inf]**; a yes is "EPM forces add
+  refusal" and the drive is expunged again.
+- A drive with no Drobo header is "made available for re-use" (`discoverAllDisRecords`).
+  Whether the identity-keyed tracker also blocks a wiped drive on that path was not traced.
+- No shell command was found that clears an expunge or a tracker.
 
 ## 12. Open questions that need the hardware
 
