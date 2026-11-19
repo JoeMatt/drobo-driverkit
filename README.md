@@ -131,7 +131,7 @@ staples the app and DMG, then writes a ZIP and SHA-256 checksums. The manual wor
 a draft release and stays disabled until distribution signing is configured.
 
 The [release instructions](packaging/release-instructions.txt) cover local signing and optional
-CI secrets. No keys have been uploaded. Unsigned preview DMGs have been built and checked;
+CI secrets. Signing and notarization credentials are configured; distribution profiles are pending. Unsigned preview DMGs have been built and checked;
 they cannot activate a driver under normal security. Developer ID notarization and clean-Mac
 activation remain untested while approval is pending.
 
