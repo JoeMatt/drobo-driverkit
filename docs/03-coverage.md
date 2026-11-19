@@ -138,3 +138,12 @@ publishes its raw bytes under `DroboHealth`.
 Nothing in the "unknown" rows is guessed into code. Each needs a reference (Drobo Dashboard's own
 requests, or a field observed on hardware and recorded in protocol notes section 11) before it is
 decoded.
+
+## Distribution packaging
+
+| Feature | Status |
+| --- | --- |
+| arm64 app and DMG packaging | implemented; unsigned preview built and DMG checksum verified |
+| Distribution profile validation and PCI scope reduction | implemented; 19 automated validation tests pass; rejects a real device-limited development profile |
+| Developer ID signing, notarization and stapling | implemented, unverified end to end; Apple distribution approval pending |
+| Driver activation from a public download on an unregistered Mac | unverified; requires approved distribution profiles and hardware |

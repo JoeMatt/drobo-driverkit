@@ -1,0 +1,13 @@
+{
+  "product": "DroboDriverKit",
+  "project": "DroboDriverKit.xcodeproj",
+  "scheme": "DroboHost",
+  "app_id": "com.joemattiello.DroboDriverKit",
+  "driver_id": "com.joemattiello.DroboDriverKit.driver",
+  "cli": "drobo",
+  "driver_entitlements": "DroboDriver/DroboDriver.entitlements",
+  "host_entitlements": "DroboHost/DroboHost.entitlements",
+  "team": "S32Z3HMYVQ",
+  "pci_matches": ["0x38444452", "0x55704452"],
+  "install_text": "DroboDriverKit\n\nSafely eject mounted Drobo volumes before installing or updating the driver. Drag DroboDriverKit.app into Applications, open it and click Activate. Approve DroboDriverKit under Driver Extensions in System Settings. Reconnect the Drobo after activation completes, or restart if macOS requests it.\n\nApple silicon, macOS 14 or later. Drobo 8D is the verified hardware. Other Thunderbolt models are untested and may not be included in this build, depending on Apple's PCI entitlement grant.\n\nVolumes are read-only by default. Writing is experimental and opt-in per volume; keep another copy before enabling it. APFS volumes require writing to be enabled before macOS will mount them. If macOS offers to initialize an existing Drobo disk, choose Ignore.\nhttps://github.com/JoeMatt/drobo-driverkit\n"
+}

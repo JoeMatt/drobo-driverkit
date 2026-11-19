@@ -125,7 +125,17 @@ can build and run a driver like this one on **their own** Macs. Shipping one bui
 hardware. That request is pending. Until it is granted, a notarized download cannot exist, no
 matter who builds it.
 
-So for now you build and sign it yourself. It takes about 30 minutes and you do it once a year.
+The distribution request was submitted to Apple on 2026-11-18. Release packaging is prepared in
+`scripts/release.py`: it validates the Apple profiles, signs the app and driver, notarizes and
+staples the app and DMG, then writes a ZIP and SHA-256 checksums. The manual workflow creates
+a draft release and stays disabled until distribution signing is configured.
+
+The [release instructions](packaging/release-instructions.txt) cover local signing and optional
+CI secrets. No keys have been uploaded. Unsigned preview DMGs have been built and checked;
+they cannot activate a driver under normal security. Developer ID notarization and clean-Mac
+activation remain untested while approval is pending.
+
+For now, the installation instructions below use development signing on your own registered Mac.
 
 ## What you need
 
@@ -298,8 +308,8 @@ Layout:
 - `project.yml`: [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is
   generated from it.
 - `.github/workflows/build.yml`: compile check on every push.
-- `.github/workflows/release.yml`: Developer ID + notarization pipeline. Dormant and unrun until
-  Apple grants the distribution entitlements.
+- `.github/workflows/release.yml`: manual Developer ID signing and notarization pipeline,
+  disabled until Apple grants distribution entitlements. Produces a draft release.
 
 Compile without signing:
 

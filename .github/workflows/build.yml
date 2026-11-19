@@ -40,3 +40,6 @@ jobs:
           xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost \
             -configuration Release -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build
+
+      - name: Distribution profile gate checks
+        run: python3 -m unittest discover -s tests -p 'test_release.py'

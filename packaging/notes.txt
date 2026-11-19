@@ -1,0 +1,9 @@
+DroboDriverKit
+
+A DriverKit driver and dashboard for Drobo 8D Thunderbolt storage on Apple silicon. Includes drive-bay status, capacity, rebuild progress and a bundled command-line tool.
+
+Install: safely eject mounted Drobo volumes, drag the app into Applications, open it, activate and approve the driver. Reconnect after activation completes; restart if macOS requests it.
+
+Apple silicon, macOS 14 or later. Drobo 8D is verified; other Thunderbolt models are untested and may be excluded by the PCI grant in this build. Writing is experimental and off by default. APFS needs writes enabled to mount. Keep another copy before enabling writes. Never initialize an existing Drobo pack when macOS prompts.
+
+The downloadable files must be Developer ID signed, notarized and stapled. Verify SHA256SUMS.txt before installation.
