@@ -32,7 +32,7 @@ LOCAL RELEASE (no certificate/key export required)
 
    Replace VERSION with the numeric version in project.yml. The script uses a fresh build/release directory. For a second attempt, choose a fresh directory with --output; it will not overwrite signed artifacts.
 
-   This builds arm64, signs the CLI/driver/app from inside out with secure timestamps and hardened runtime, checks certificate/profile agreement and signed entitlements, notarizes and staples the app, builds the DMG, signs/notarizes/staples the DMG, checks Gatekeeper, and writes a ZIP plus SHA256SUMS.txt. Notarization receipts remain in the output directory. The package command does not publish anything.
+   This builds arm64, signs the CLI/privileged helper/driver/app from inside out with secure timestamps and hardened runtime, checks certificate/profile agreement and signed entitlements, notarizes and staples the app, builds the DMG, signs/notarizes/staples the DMG, checks Gatekeeper, and writes a ZIP plus SHA256SUMS.txt. Notarization receipts remain in the output directory. The package command does not publish anything.
 
 GITHUB ACTIONS (optional)
 

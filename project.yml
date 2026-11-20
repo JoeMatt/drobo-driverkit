@@ -6,6 +6,9 @@ options:
 settings:
   base:
     DEVELOPMENT_TEAM: S32Z3HMYVQ
+    # Every bundle identifier derives from this one. Building under your own Apple team means
+    # changing it and DEVELOPMENT_TEAM, here or on the xcodebuild command line.
+    DROBO_APP_ID: com.joemattiello.DroboDriverKit
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.30.1"
     CURRENT_PROJECT_VERSION: "33"
@@ -17,7 +20,7 @@ targets:
       - DroboHost
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit
+        PRODUCT_BUNDLE_IDENTIFIER: $(DROBO_APP_ID)
         PRODUCT_NAME: DroboDriverKit
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
@@ -34,8 +37,40 @@ targets:
           # Lets the app's nightly update check compare against what it was built from.
           mkdir -p "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
           git -C "$SRCROOT" rev-parse HEAD > "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/commit.txt" 2>/dev/null || true
+      - name: Write the helper's launchd plist
+        basedOnDependencyAnalysis: false
+        script: |
+          # SMAppService.daemon looks for this inside the bundle. It is written here, before
+          # the app is signed, so its label always follows the app's bundle identifier.
+          dir="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
+          mkdir -p "$dir"
+          cat > "$dir/$PRODUCT_BUNDLE_IDENTIFIER.helper.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key>
+            <string>$PRODUCT_BUNDLE_IDENTIFIER.helper</string>
+            <key>BundleProgram</key>
+            <string>Contents/MacOS/DroboHelper</string>
+            <key>MachServices</key>
+            <dict>
+              <key>$PRODUCT_BUNDLE_IDENTIFIER.helper</key>
+              <true/>
+            </dict>
+            <key>AssociatedBundleIdentifiers</key>
+            <array>
+              <string>$PRODUCT_BUNDLE_IDENTIFIER</string>
+            </array>
+          </dict>
+          </plist>
+          EOF
     dependencies:
       - target: DroboCLI
+        embed: true
+        copy:
+          destination: executables
+      - target: DroboHelper
         embed: true
         copy:
           destination: executables
@@ -57,8 +92,31 @@ targets:
       - DroboHost/DroboLog.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.cli
+        PRODUCT_BUNDLE_IDENTIFIER: $(DROBO_APP_ID).cli
         PRODUCT_NAME: drobo
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "5.0"
+  # The privileged helper: a root launchd daemon that mounts and unmounts Drobo volumes for
+  # standard accounts. Embedded at Contents/MacOS/DroboHelper and registered by the app.
+  DroboHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - DroboHelper
+      - DroboHost/HelperProtocol.swift
+      - DroboHost/DroboMonitor.swift
+      - DroboHost/Demo.swift
+      - DroboHost/BayHistory.swift
+      - DroboHost/DroboLog.swift
+    settings:
+      base:
+        # Must stay the app's identifier plus ".helper": both sides derive it that way.
+        PRODUCT_BUNDLE_IDENTIFIER: $(DROBO_APP_ID).helper
+        PRODUCT_NAME: DroboHelper
+        # An Info.plist inside the binary gives the tool a bundle identifier, which is also
+        # what codesign uses as its signing identifier.
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
         ENABLE_HARDENED_RUNTIME: YES
         SWIFT_VERSION: "5.0"
   DroboDriver:
@@ -70,7 +128,7 @@ targets:
       base:
         SDKROOT: driverkit
         DRIVERKIT_DEPLOYMENT_TARGET: "23.0"
-        PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.driver
+        PRODUCT_BUNDLE_IDENTIFIER: $(DROBO_APP_ID).driver
         PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
         INFOPLIST_FILE: DroboDriver/Info.plist
         CODE_SIGN_ENTITLEMENTS: DroboDriver/DroboDriver.entitlements

@@ -469,21 +469,41 @@ enum DroboMonitor {
 
     private static func diskNumber(_ bsd: String) -> Int { Int(bsd.dropFirst(4)) ?? Int.max }
 
+    /// How to run diskutil as root for an account that may not do it itself: a verb and
+    /// the BSD names to apply it to, returning nil on success. The app installs
+    /// `PrivilegedHelper.diskutil` here; the command line tool and the helper leave it nil.
+    static var elevatedDiskutil: ((String, [String]) -> String?)?
+
+    /// Whether a BSD name ("disk5", "disk5s1") is a disk or volume on one of the Drobo's
+    /// units. The privileged helper refuses anything else.
+    static func isDroboDisk(bsdName: String) -> Bool {
+        guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return false }
+        let media = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        guard media != 0 else { return false }
+        defer { IOObjectRelease(media) }
+        return droboLUN(of: media) != nil
+    }
+
+    /// Runs one diskutil verb on one disk as the current user. Returns nil on success.
+    static func diskutil(_ verb: String, _ bsdName: String) -> String? {
+        guard let result = runTool("/usr/sbin/diskutil", [verb, bsdName]) else { return "Could not run diskutil." }
+        return result.status == 0 ? nil : result.output
+    }
+
     /// Mounts or unmounts every volume on one of the Drobo's disks. Returns nil on success.
     /// A standard (non-admin) account is not allowed to do this for a disk it did not mount
-    /// itself, so when it fails for such an account it is retried behind macOS's
-    /// administrator prompt.
+    /// itself, so when it fails for such an account it is retried with an administrator's
+    /// authorisation.
     static func setMounted(_ mounted: Bool, bsdName: String) -> String? {
-        let arguments = [mounted ? "mountDisk" : "unmountDisk", bsdName]
-        guard let result = run("/usr/sbin/diskutil", arguments) else { return "Could not run diskutil." }
-        if result.status == 0 { return nil }
-        if !userIsAdmin { return diskutilAsAdmin([arguments]) }
-        return result.output
+        let verb = mounted ? "mountDisk" : "unmountDisk"
+        guard let failure = diskutil(verb, bsdName) else { return nil }
+        if !userIsAdmin, let elevated = elevatedDiskutil { return elevated(verb, [bsdName]) }
+        return failure
     }
 
     /// Unmounts every Drobo volume. Calls back with the names that could not be ejected.
     /// For a standard account, whatever it was not allowed to unmount is retried once
-    /// behind a single administrator prompt.
+    /// with a single administrator prompt.
     static func ejectAll(completion: @escaping ([String]) -> Void) {
         let targets = volumes()
         guard !targets.isEmpty else { completion([]); return }
@@ -501,11 +521,11 @@ enum DroboMonitor {
         }
         group.notify(queue: .global(qos: .userInitiated)) {
             var names = failed.map(\.name)
-            if !failed.isEmpty, !userIsAdmin {
-                let commands = failed.compactMap { bsdName(ofVolumeAt: $0.id) }.map { ["unmount", $0] }
-                if !commands.isEmpty {
-                    _ = diskutilAsAdmin(commands)
-                    // Trust what is still mounted, not the exit status of the last command.
+            if !failed.isEmpty, !userIsAdmin, let elevated = elevatedDiskutil {
+                let disks = failed.compactMap { bsdName(ofVolumeAt: $0.id) }
+                if !disks.isEmpty {
+                    _ = elevated("unmount", disks)
+                    // Trust what is still mounted, not what the elevated attempt reported.
                     let remaining = Set(volumes().map(\.id))
                     names = failed.filter { remaining.contains($0.id) }.map(\.name)
                 }
@@ -531,7 +551,7 @@ enum DroboMonitor {
         return groups.prefix(Int(max(0, min(count, 256)))).contains(80)
     }
 
-    private static func run(_ path: String, _ arguments: [String]) -> (status: Int32, output: String)? {
+    static func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: String)? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -548,28 +568,6 @@ enum DroboMonitor {
         process.waitUntilExit()
         let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return (process.terminationStatus, output)
-    }
-
-    /// Runs diskutil commands as root behind macOS's standard administrator prompt (one
-    /// prompt for the whole batch). Returns nil on success. Run through osascript rather
-    /// than NSAppleScript so it can block a background thread while the prompt is up.
-    private static func diskutilAsAdmin(_ commands: [[String]]) -> String? {
-        // Only verbs and BSD names are ever passed; refuse anything else instead of quoting it.
-        let allowed = CharacterSet.alphanumerics
-        let words = commands.flatMap { $0 }
-        guard !words.isEmpty,
-              words.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains) }) else {
-            return "Could not run diskutil."
-        }
-        let shell = commands.map { "/usr/sbin/diskutil " + $0.joined(separator: " ") }.joined(separator: " ; ")
-        let script = "do shell script \"\(shell)\" "
-            + "with prompt \"An administrator name and password is needed to mount or unmount Drobo volumes.\" "
-            + "with administrator privileges"
-        guard let result = run("/usr/bin/osascript", ["-e", script]) else { return "Could not ask for an administrator login." }
-        if result.status == 0 { return nil }
-        // -128 is AppleScript's "user cancelled".
-        if result.output.contains("-128") { return "Administrator login was cancelled." }
-        return result.output
     }
 
     /// The Drobo's logical units with whatever is mounted from each.

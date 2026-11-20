@@ -293,6 +293,7 @@ final class DashboardModel: ObservableObject {
     }
 
     init() {
+        DroboMonitor.elevatedDiskutil = PrivilegedHelper.diskutil
         events.onChanges = { Alerts.deliver($0) }
         bays.onHeadline = { [weak self] headline, advice in self?.events.add(.warning, headline, advice)
             Alerts.deliver([DroboEvent(date: Date(), level: .warning, title: headline, detail: advice)])

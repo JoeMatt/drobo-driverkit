@@ -147,6 +147,23 @@ For now, the installation instructions below use development signing on your own
 - [Xcode](https://apps.apple.com/app/xcode/id497799835) (free, from the Mac App Store).
 - [Homebrew](https://brew.sh) to install one small tool.
 
+## Install with the script
+
+Until there is a notarized download, `scripts/install.sh` does the mechanical part: it checks
+your Mac, downloads (or updates) the source, builds it signed with **your** Apple Developer
+team, checks the signatures and copies the app to Applications.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JoeMatt/drobo-driverkit/master/scripts/install.sh | bash
+```
+
+It asks for your Team ID and an identifier prefix once, then shows exactly what to register on
+Apple's developer site (step 3 below, the one part that cannot be scripted) and waits. It
+changes no security setting and uses `sudo` only if your account cannot write to
+Applications. `scripts/install.sh --check` only reports whether your Mac has what it needs;
+`--help` lists the other options. The script has not yet been run end to end by the
+maintainer; the manual steps below do the same thing by hand.
+
 ## Install, step by step
 
 You do not need to know how to program. You will copy a few commands into Terminal and click
@@ -175,15 +192,15 @@ yours, for example `com.yourname`. Also find your **Team ID**: sign in at
 [developer.apple.com/account](https://developer.apple.com/account), open **Membership details**,
 and copy the 10-character Team ID.
 
-Open `project.yml` in any text editor and change three lines:
+Open `project.yml` in any text editor and change two lines near the top:
 
 | Line | Change to |
 |---|---|
 | `DEVELOPMENT_TEAM: S32Z3HMYVQ` | your Team ID |
-| `PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit` | `com.yourname.DroboDriverKit` |
-| `PRODUCT_BUNDLE_IDENTIFIER: com.joemattiello.DroboDriverKit.driver` | `com.yourname.DroboDriverKit.driver` |
+| `DROBO_APP_ID: com.joemattiello.DroboDriverKit` | `com.yourname.DroboDriverKit` |
 
-The second ID must be the first one plus `.driver`.
+The driver, the command line tool and the privileged helper take their identifiers from that
+one (`….driver`, `….cli`, `….helper`).
 
 ### 3. Register your Mac and the two identifiers with Apple
 
@@ -251,6 +268,17 @@ If macOS ever says *"The disk you attached was not readable by this computer"*, 
 Apple's development signing lasts one year. When it expires the driver stops loading; repeat
 steps 4 and 5 to renew. Do the same to install a newer version of this project:
 `git pull`, rebuild, copy to Applications, eject the Drobo's volumes, click **Activate** again.
+Running `scripts/install.sh` again does the pull, rebuild and copy for you.
+
+## Standard (non-admin) accounts
+
+macOS does not let a standard account mount or unmount a disk it did not mount itself. The app
+includes a small privileged helper for that. The first time such an account uses Mount, Unmount
+or Eject, an administrator has to allow DroboDriverKit once under **System Settings → General →
+Login Items & Extensions → Allow in the Background**. After that each of those actions asks
+for an administrator's name and password in a prompt carrying the app's name. The helper only
+runs `diskutil` mount and unmount commands, only on the Drobo's disks, and only for this app.
+Administrator accounts are never asked.
 
 ## Troubleshooting
 
@@ -303,6 +331,9 @@ coverage against the original Drobo software is tracked in [docs/03-coverage.md]
 Layout:
 
 - `DroboHost/`: SwiftUI app whose only job is to activate the driver extension.
+- `DroboHelper/`: the privileged helper, a root launchd daemon the app registers so standard
+  accounts can mount and unmount.
+- `scripts/install.sh`: download or update, build signed with your own team, install.
 - `DroboDriver/`: the dext, an `IOUserSCSIParallelInterfaceController` on `IOPCIDevice`.
   `DroboProtocol.h` holds the wire structures.
 - `project.yml`: [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is
