@@ -100,6 +100,17 @@ def load_profiles(config, args):
         return out
     return host_path, driver_path, host, driver, signing_entitlements(host_required, host_ent), signing_entitlements(driver_required, driver_ent), matches
 
+def helper_plist_check(plist, app_id, helper):
+    """The launchd plist the app registers must name this app's helper and nothing else."""
+    label = app_id + '.helper'
+    require(plist.get('Label') == label, 'Helper launchd plist has the wrong label')
+    require(plist.get('BundleProgram') == 'Contents/MacOS/' + helper, 'Helper launchd plist points at the wrong program')
+    require(plist.get('MachServices') == {label: True}, 'Helper launchd plist must publish exactly its own Mach service')
+    require(plist.get('AssociatedBundleIdentifiers') == [app_id], 'Helper launchd plist is not associated with the app')
+    # A root daemon started by anything but its bundled program or a request would be a surprise.
+    for key in ('Program', 'ProgramArguments', 'RunAtLoad', 'KeepAlive', 'UserName'):
+        require(key not in plist, f'Helper launchd plist must not set {key}')
+
 def build(config, output):
     run(['xcodegen', 'generate'])
     derived = output / 'DerivedData'
@@ -163,7 +174,12 @@ def package(config, args, output):
         require(version == args.version, 'Requested release version differs from project.yml')
     driver = app / 'Contents/Library/SystemExtensions' / (config['driver_id'] + '.dext')
     cli = app / 'Contents/MacOS' / config['cli']
-    require(driver.is_dir() and cli.is_file(), 'Missing driver or bundled command')
+    helper = app / 'Contents/MacOS' / config['helper']
+    helper_id = config['app_id'] + '.helper'
+    require(driver.is_dir() and cli.is_file() and helper.is_file(), 'Missing driver, bundled command or privileged helper')
+    helper_plist = app / 'Contents/Library/LaunchDaemons' / (helper_id + '.plist')
+    require(helper_plist.is_file(), 'Missing the privileged helper launchd plist')
+    helper_plist_check(read_plist(helper_plist), config['app_id'], config['helper'])
     require(run(['lipo', '-archs', driver / config['driver_id']], capture=True).decode().strip() == 'arm64', 'Driver must contain exactly arm64 (no arm64e)')
     # An 8D-only PCI grant is enough: remove unapproved optional hardware personalities.
     if matches:
@@ -177,12 +193,18 @@ def package(config, args, output):
     for label, ent in [('host', host_ent), ('driver', driver_ent)]:
         (output / (label + '-entitlements.plist')).write_bytes(plistlib.dumps(ent))
     # No --deep signing: sign each executable from the inside out.
-    for target, ent in [(cli, None), (driver, 'driver'), (app, 'host')]:
+    # The helper runs as root and holds its caller to its own team, so it must carry this
+    # identity and exactly the identifier the app expects.
+    for target, ent in [(cli, None), (helper, None), (driver, 'driver'), (app, 'host')]:
         command = ['codesign', '--force', '--sign', args.identity, '--timestamp', '--options', 'runtime']
+        if target == helper:
+            command += ['--identifier', helper_id]
         if ent:
             command += ['--entitlements', output / (ent + '-entitlements.plist')]
         run(command + [target])
         signature_check(target, config, driver_ent if ent == 'driver' else host_ent if ent == 'host' else None)
+    helper_details = subprocess.run(['codesign', '-d', '--verbose=4', str(helper)], capture_output=True, check=True).stderr.decode()
+    require('Identifier=' + helper_id + '\n' in helper_details, 'Privileged helper has the wrong signing identifier')
     check_certificate(app, host_profile, output, 'host')
     check_certificate(driver, driver_profile, output, 'driver')
     run(['codesign', '--verify', '--deep', '--strict', app])

@@ -64,7 +64,7 @@ protocol reference are marked as needing that analysis.
 | Blink lights (identify) | vendor `EA` operation `06` | back in the app with Dashboard's framing since v0.27.0 (protocol notes 11.14) | **disabled**: on hardware the unit stopped responding and restarted, lights never blinked (protocol notes 11.8) |
 | Shut down / standby | vendor `EA` command `0D` | Shut Down | unverified |
 | Restart | unknown | not implemented | no: needs Dashboard analysis |
-| Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons) |
+| Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons; privileged helper and administrator prompt for standard accounts) |
 | Create / delete / resize volumes | drobo-utils has `SetLunSize` only | not implemented | no: needs Dashboard analysis |
 | Format a volume | host side | Disk Utility, once writing is on | n/a |
 | Dim lights / LED brightness | unknown | not implemented | no: needs Dashboard analysis |

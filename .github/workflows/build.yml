@@ -41,5 +41,21 @@ jobs:
             -configuration Release -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build
 
+      # The built app must contain the privileged helper and the launchd plist that registers it.
+      - name: Privileged helper is embedded
+        run: |
+          app=build/Build/Products/Release/DroboDriverKit.app
+          test -x "$app/Contents/MacOS/DroboHelper"
+          plist="$app/Contents/Library/LaunchDaemons/com.joemattiello.DroboDriverKit.helper.plist"
+          plutil -lint "$plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist")" = com.joemattiello.DroboDriverKit.helper
+          # The helper needs a bundle identifier inside the binary to find its own service name.
+          otool -s __TEXT __info_plist "$app/Contents/MacOS/DroboHelper" | grep -q 'Contents of'
+
+      - name: Install script preflight
+        run: |
+          bash -n scripts/install.sh
+          scripts/install.sh --check
+
       - name: Distribution profile gate checks
         run: python3 -m unittest discover -s tests -p 'test_release.py'

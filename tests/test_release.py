@@ -107,5 +107,47 @@ class DistributionGateTests(unittest.TestCase):
     def test_no_pci_for_usbsmart(self):
         self.assertEqual(release.pci_subset({}, []), [])
 
+class HelperPlistTests(unittest.TestCase):
+    APP = 'com.example.app'
+
+    def setUp(self):
+        self.plist = {
+            'Label': self.APP + '.helper',
+            'BundleProgram': 'Contents/MacOS/DroboHelper',
+            'MachServices': {self.APP + '.helper': True},
+            'AssociatedBundleIdentifiers': [self.APP],
+        }
+
+    def check(self):
+        release.helper_plist_check(self.plist, self.APP, 'DroboHelper')
+
+    def test_valid(self):
+        self.check()
+
+    def test_reject_other_label(self):
+        self.plist['Label'] = 'com.other.helper'
+        with self.assertRaises(release.ReleaseError): self.check()
+
+    def test_reject_other_program(self):
+        self.plist['BundleProgram'] = 'Contents/MacOS/drobo'
+        with self.assertRaises(release.ReleaseError): self.check()
+
+    def test_reject_extra_service(self):
+        self.plist['MachServices']['com.other.service'] = True
+        with self.assertRaises(release.ReleaseError): self.check()
+
+    def test_reject_run_at_load(self):
+        self.plist['RunAtLoad'] = True
+        with self.assertRaisesRegex(release.ReleaseError, 'RunAtLoad'): self.check()
+
+    def test_spec_writes_a_plist_that_passes(self):
+        # The plist is written by a build script in project.yml; expand it the way the shell would.
+        import plistlib, re
+        spec = (root / 'project.yml').read_text()
+        body = re.search(r'<<EOF\n(.*?)\n\s*EOF\n', spec, re.S).group(1)
+        text = body.replace('$PRODUCT_BUNDLE_IDENTIFIER', self.APP)
+        self.plist = plistlib.loads('\n'.join(line.strip() for line in text.splitlines()).encode())
+        self.check()
+
 if __name__ == '__main__':
     unittest.main()

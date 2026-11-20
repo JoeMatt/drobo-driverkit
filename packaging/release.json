@@ -5,6 +5,7 @@
   "app_id": "com.joemattiello.DroboDriverKit",
   "driver_id": "com.joemattiello.DroboDriverKit.driver",
   "cli": "drobo",
+  "helper": "DroboHelper",
   "driver_entitlements": "DroboDriver/DroboDriver.entitlements",
   "host_entitlements": "DroboHost/DroboHost.entitlements",
   "team": "S32Z3HMYVQ",

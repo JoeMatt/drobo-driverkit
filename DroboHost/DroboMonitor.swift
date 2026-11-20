@@ -469,42 +469,105 @@ enum DroboMonitor {
 
     private static func diskNumber(_ bsd: String) -> Int { Int(bsd.dropFirst(4)) ?? Int.max }
 
+    /// How to run diskutil as root for an account that may not do it itself: a verb and
+    /// the BSD names to apply it to, returning nil on success. The app installs
+    /// `PrivilegedHelper.diskutil` here; the command line tool and the helper leave it nil.
+    static var elevatedDiskutil: ((String, [String]) -> String?)?
+
+    /// Whether a BSD name ("disk5", "disk5s1") is a disk or volume on one of the Drobo's
+    /// units. The privileged helper refuses anything else.
+    static func isDroboDisk(bsdName: String) -> Bool {
+        guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return false }
+        let media = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        guard media != 0 else { return false }
+        defer { IOObjectRelease(media) }
+        return droboLUN(of: media) != nil
+    }
+
+    /// Runs one diskutil verb on one disk as the current user. Returns nil on success.
+    static func diskutil(_ verb: String, _ bsdName: String) -> String? {
+        guard let result = runTool("/usr/sbin/diskutil", [verb, bsdName]) else { return "Could not run diskutil." }
+        return result.status == 0 ? nil : result.output
+    }
+
     /// Mounts or unmounts every volume on one of the Drobo's disks. Returns nil on success.
+    /// A standard (non-admin) account is not allowed to do this for a disk it did not mount
+    /// itself, so when it fails for such an account it is retried with an administrator's
+    /// authorisation.
     static func setMounted(_ mounted: Bool, bsdName: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        process.arguments = [mounted ? "mountDisk" : "unmountDisk", bsdName]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return "Could not run diskutil."
-        }
-        if process.terminationStatus == 0 { return nil }
-        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verb = mounted ? "mountDisk" : "unmountDisk"
+        guard let failure = diskutil(verb, bsdName) else { return nil }
+        if !userIsAdmin, let elevated = elevatedDiskutil { return elevated(verb, [bsdName]) }
+        return failure
     }
 
     /// Unmounts every Drobo volume. Calls back with the names that could not be ejected.
+    /// For a standard account, whatever it was not allowed to unmount is retried once
+    /// with a single administrator prompt.
     static func ejectAll(completion: @escaping ([String]) -> Void) {
         let targets = volumes()
         guard !targets.isEmpty else { completion([]); return }
         let group = DispatchGroup()
         let lock = NSLock()
-        var failures: [String] = []
+        var failed: [DroboVolume] = []
         for volume in targets {
             group.enter()
             FileManager.default.unmountVolume(at: volume.id, options: [.withoutUI]) { error in
                 if error != nil {
-                    lock.lock(); failures.append(volume.name); lock.unlock()
+                    lock.lock(); failed.append(volume); lock.unlock()
                 }
                 group.leave()
             }
         }
-        group.notify(queue: .main) { completion(failures) }
+        group.notify(queue: .global(qos: .userInitiated)) {
+            var names = failed.map(\.name)
+            if !failed.isEmpty, !userIsAdmin, let elevated = elevatedDiskutil {
+                let disks = failed.compactMap { bsdName(ofVolumeAt: $0.id) }
+                if !disks.isEmpty {
+                    _ = elevated("unmount", disks)
+                    // Trust what is still mounted, not what the elevated attempt reported.
+                    let remaining = Set(volumes().map(\.id))
+                    names = failed.filter { remaining.contains($0.id) }.map(\.name)
+                }
+            }
+            DispatchQueue.main.async { completion(names) }
+        }
+    }
+
+    private static func bsdName(ofVolumeAt url: URL) -> String? {
+        guard let session = DASessionCreate(kCFAllocatorDefault),
+              let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL),
+              let name = DADiskGetBSDName(disk) else { return nil }
+        return String(cString: name)
+    }
+
+    /// Whether the logged-in user is in the admin group (gid 80). Admins can mount and
+    /// unmount without a prompt, so they are never asked to authenticate.
+    private static var userIsAdmin: Bool {
+        guard let user = getpwuid(getuid()) else { return false }
+        var groups = [Int32](repeating: 0, count: 256)
+        var count = Int32(groups.count)
+        _ = getgrouplist(user.pointee.pw_name, Int32(user.pointee.pw_gid), &groups, &count)
+        return groups.prefix(Int(max(0, min(count, 256)))).contains(80)
+    }
+
+    static func runTool(_ path: String, _ arguments: [String]) -> (status: Int32, output: String)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        // Read before waiting so a chatty child cannot fill the pipe and stall.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (process.terminationStatus, output)
     }
 
     /// The Drobo's logical units with whatever is mounted from each.
