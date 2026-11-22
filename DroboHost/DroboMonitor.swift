@@ -199,6 +199,7 @@ enum DroboVolumeAction: Equatable {
         switch unit {
         case "tb", "tib", "t": scale = 1_099_511_627_776
         case "gb", "gib", "g": scale = 1_073_741_824
+        case "mb", "mib", "m": scale = 1_048_576
         default: return nil
         }
         let bytes = number * scale
@@ -1054,6 +1055,102 @@ enum DroboMonitor {
         return String(format: "Write test passed: 64 MB written at %.0f MB/s and read back identical at %.0f MB/s.",
                       megabytes / max(writeSeconds, 0.001), megabytes / max(readSeconds, 0.001))
     }
+
+    // MARK: Speed test
+
+    /// What one run of the speed test measured, in megabytes (10^6 bytes) per second, the unit
+    /// disk speed tests usually show.
+    struct SpeedTestResult: Equatable {
+        let bytes: Int
+        let writeSpeed: Double
+        let readSpeed: Double
+    }
+
+    enum SpeedTestPhase { case writing, reading }
+
+    /// Lets the person stop a test that is running on another thread.
+    final class SpeedTestCancel: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+        func cancel() { lock.lock(); flag = true; lock.unlock() }
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    }
+
+    /// Measures how fast a mounted, writable volume takes and gives back one large file:
+    /// writes `megabytes` MiB of random data in 4 MiB pieces, makes the Drobo confirm it has
+    /// them, then reads the file back. The Mac's file cache is bypassed both ways, so the
+    /// numbers are the Drobo's and the cable's, not memory's. The file is removed afterwards.
+    /// `progress` gets the phase, how far along it is (0 to 1) and the speed so far.
+    static func speedTest(on volume: URL, megabytes: Int, cancel: SpeedTestCancel? = nil,
+                          progress: (SpeedTestPhase, Double, Double) -> Void = { _, _, _ in }) -> Result<SpeedTestResult, SpeedTestFailure> {
+        let chunkSize = 4 << 20
+        let chunks = max(1, megabytes / 4)
+        let total = chunks * chunkSize
+        let free = (try? volume.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?.volumeAvailableCapacity ?? 0
+        guard free > total + (256 << 20) else {
+            return .failure(SpeedTestFailure("Not enough free space on the volume for a test of this size."))
+        }
+        let path = volume.appendingPathComponent(".drobo-speed-test-\(UUID().uuidString).bin").path
+        defer { unlink(path) }
+
+        // One page-aligned buffer of random bytes, written over and over: random so nothing in
+        // between can compress it, reused so generating it does not slow the writes.
+        var raw: UnsafeMutableRawPointer?
+        guard posix_memalign(&raw, 16384, chunkSize) == 0, let buffer = raw else {
+            return .failure(SpeedTestFailure("Could not get memory for the test."))
+        }
+        defer { free_(buffer) }
+        _ = SecRandomCopyBytes(kSecRandomDefault, chunkSize, buffer)
+        func megabytesPerSecond(_ bytes: Int, _ seconds: Double) -> Double { Double(bytes) / 1_000_000 / max(seconds, 0.001) }
+        func reason() -> String { String(cString: strerror(errno)) }
+
+        let fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0o600)
+        guard fd >= 0 else { return .failure(SpeedTestFailure("Could not create the test file (\(reason())). Is Allow writes on for this volume?")) }
+        _ = fcntl(fd, F_NOCACHE, 1)
+        let writeStart = Date()
+        for index in 0..<chunks {
+            if cancel?.isCancelled == true { close(fd); return .failure(SpeedTestFailure("Stopped.", cancelled: true)) }
+            guard write(fd, buffer, chunkSize) == chunkSize else {
+                let why = reason()
+                close(fd)
+                return .failure(SpeedTestFailure("Writing failed (\(why))."))
+            }
+            let done = (index + 1) * chunkSize
+            progress(.writing, Double(done) / Double(total), megabytesPerSecond(done, Date().timeIntervalSince(writeStart)))
+        }
+        // The time to get it all onto the Drobo counts as writing.
+        guard fcntl(fd, F_FULLFSYNC) == 0 else {
+            let why = reason()
+            close(fd)
+            return .failure(SpeedTestFailure("The Drobo did not confirm the data was stored (\(why))."))
+        }
+        let writeSpeed = megabytesPerSecond(total, Date().timeIntervalSince(writeStart))
+        close(fd)
+
+        let readFD = open(path, O_RDONLY)
+        guard readFD >= 0 else { return .failure(SpeedTestFailure("Could not reopen the test file (\(reason())).")) }
+        defer { close(readFD) }
+        _ = fcntl(readFD, F_NOCACHE, 1)
+        let readStart = Date()
+        var done = 0
+        while done < total {
+            if cancel?.isCancelled == true { return .failure(SpeedTestFailure("Stopped.", cancelled: true)) }
+            let count = read(readFD, buffer, chunkSize)
+            guard count > 0 else { return .failure(SpeedTestFailure("Reading failed (\(count == 0 ? "the file was shorter than what was written" : reason())).")) }
+            done += count
+            progress(.reading, Double(done) / Double(total), megabytesPerSecond(done, Date().timeIntervalSince(readStart)))
+        }
+        return .success(SpeedTestResult(bytes: total, writeSpeed: writeSpeed,
+                                        readSpeed: megabytesPerSecond(total, Date().timeIntervalSince(readStart))))
+    }
+
+    struct SpeedTestFailure: Error, Equatable {
+        let text: String
+        var cancelled = false
+        init(_ text: String, cancelled: Bool = false) { self.text = text; self.cancelled = cancelled }
+    }
+
+    private static func free_(_ pointer: UnsafeMutableRawPointer) { free(pointer) }
 
     // MARK: Diagnostics
 

@@ -5,7 +5,7 @@ What the original Drobo software did, and where this project stands. Status valu
 on hardware), **unsupported** (implemented, but the hardware or firmware refuses it on a stock
 unit, so it cannot work for users), **partial**, **no**.
 
-Last updated for v0.31.3 (driver unchanged since v0.31.2).
+Last updated for v0.31.4 (driver unchanged since v0.31.2).
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -129,6 +129,7 @@ publishes its raw bytes under `DroboHealth`.
 | SSD (hot data) cache | no command found; Dashboard only shows a status | Summary shows whether the SSD bay holds a healthy drive |
 | Open in Finder | no protocol needed | in the app (Volumes) |
 | Drobo-style Finder volume icon with a fullness bar | a `.VolumeIcon.icns` written to the volume | in the app (Volumes → Set Icon), writable volumes only; checked on a disk image, not on a Drobo |
+| Speed test (write and read speed of one volume) | no protocol needed: one large file written and read back with the file cache bypassed | in the app (Volumes → Speed Test…) and as `drobo speedtest <volume>` since v0.31.4, on volumes that allow writes | command **verified** on the 8D (a 5 GB run: 256 MB/s write, 594 MB/s read on an empty pack); the app's sheet is unverified |
 | Request throughput and latency | the driver's own counters in `DroboStatus` | shown (Advanced), live only, no history |
 | Enclosure temperature, uptime | system info, sub-page `33` (protocol notes 11.11, 11.13) | **verified** on the 8D with v0.26.0 (uptime in seconds, temperature in °C); opt-in, shown on Summary |
 | Fan levels and health, power supply health | sub-pages `37`, `36` | **the 8D refuses both** (11.13); the driver drops them and carries on. Shown only on a unit that answers |

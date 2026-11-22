@@ -225,6 +225,22 @@ struct PreferencesView: View {
 // MARK: - Model
 
 /// Polls the driver's published state every two seconds and runs the dashboard's actions.
+/// What the speed test sheet shows.
+struct SpeedTestState: Identifiable {
+    let id = UUID()
+    let name: String
+    let url: URL
+    let writable: Bool
+    var running = false
+    var phase = DroboMonitor.SpeedTestPhase.writing
+    var fraction = 0.0
+    /// Speed so far in the phase that is running, MB/s.
+    var liveSpeed = 0.0
+    var writeSpeed: Double?
+    var result: DroboMonitor.SpeedTestResult?
+    var failure: String?
+}
+
 /// A volume change waiting for confirmation.
 struct VolumeRequest: Identifiable {
     let id = UUID()
@@ -495,6 +511,69 @@ final class DashboardModel: ObservableObject {
             return
         }
         volumeRequest = VolumeRequest(action: action)
+    }
+
+    // MARK: Speed test
+
+    /// The speed test sheet's state; nil when the sheet is closed.
+    @Published var speedTest: SpeedTestState?
+    private var speedTestCancel: DroboMonitor.SpeedTestCancel?
+
+    /// Opens the speed test for the volume mounted from one unit.
+    func openSpeedTest(_ lun: DroboLUN) {
+        guard let volume = volumes.first(where: { $0.lun == lun.id }) else { return }
+        speedTest = SpeedTestState(name: volume.name, url: volume.id, writable: lun.writable)
+    }
+
+    func startSpeedTest(megabytes: Int) {
+        guard var state = speedTest, !state.running else { return }
+        guard Demo.scenario == nil else {
+            state.failure = "Not available in the demo."
+            speedTest = state
+            return
+        }
+        state.running = true
+        state.phase = .writing
+        state.fraction = 0
+        state.liveSpeed = 0
+        state.result = nil
+        state.writeSpeed = nil
+        state.failure = nil
+        speedTest = state
+        let cancel = DroboMonitor.SpeedTestCancel()
+        speedTestCancel = cancel
+        let url = state.url
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var lastUpdate = Date.distantPast
+            let outcome = DroboMonitor.speedTest(on: url, megabytes: megabytes, cancel: cancel) { phase, fraction, speed in
+                // A few updates a second is plenty for a needle.
+                guard Date().timeIntervalSince(lastUpdate) > 0.15 || fraction >= 1 else { return }
+                lastUpdate = Date()
+                DispatchQueue.main.async {
+                    guard self?.speedTest?.running == true else { return }
+                    self?.speedTest?.phase = phase
+                    self?.speedTest?.fraction = fraction
+                    self?.speedTest?.liveSpeed = speed
+                    // Keep the write figure on its dial while the read runs.
+                    if phase == .writing { self?.speedTest?.writeSpeed = speed }
+                }
+            }
+            DispatchQueue.main.async {
+                guard self?.speedTest != nil else { return }
+                self?.speedTest?.running = false
+                switch outcome {
+                case .success(let result): self?.speedTest?.result = result
+                case .failure(let failure): self?.speedTest?.failure = failure.cancelled ? nil : failure.text
+                }
+            }
+        }
+    }
+
+    func stopSpeedTest() { speedTestCancel?.cancel() }
+
+    func closeSpeedTest() {
+        speedTestCancel?.cancel()
+        speedTest = nil
     }
 
     /// The blank unit waiting for a name and a format (shown as a sheet).

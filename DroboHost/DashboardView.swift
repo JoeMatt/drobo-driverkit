@@ -99,6 +99,9 @@ struct ContentView: View {
             Text("All Drobo volumes are ejected first, then the Drobo is asked to restart. It takes several minutes to come back. This needs driver 0.27.0 or later and has not been verified on hardware yet. If the Drobo is rebuilding, leave it running.")
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
+        .sheet(isPresented: Binding(get: { dashboard.speedTest != nil }, set: { if !$0 { dashboard.closeSpeedTest() } })) {
+            SpeedTestSheet(model: dashboard)
+        }
         .sheet(item: $dashboard.formatRequest) { lun in
             FormatVolumeSheet(lun: lun, cancel: { dashboard.formatRequest = nil },
                               confirm: { name, fileSystem in dashboard.format(lun, name: name, fileSystem: fileSystem) })
@@ -577,6 +580,11 @@ struct ContentView: View {
                                     .buttonStyle(PillButtonStyle(icon: "photo", compact: true))
                                     .help("A Drobo-style Finder icon with a light bar showing how full the volume is. It is a file written to the volume.")
                             }
+                            Button("Speed Test…") { dashboard.openSpeedTest(lun) }
+                                .buttonStyle(PillButtonStyle(icon: "speedometer", compact: true))
+                                .disabled(dashboard.busy)
+                                .help(lun.writable ? "Measures how fast this volume writes and reads a large file."
+                                                   : "Measures write and read speed. Needs Allow writes turned on for this volume.")
                             Button("Open in Finder") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(PillButtonStyle(icon: "folder", compact: true))
                         }
@@ -1084,5 +1092,105 @@ struct FormatVolumeSheet: View {
         .frame(width: 460)
         .background(Backdrop().ignoresSafeArea())
         .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: Speed test
+
+/// Write and read speed of one volume: two dials, a size choice and a Start button.
+struct SpeedTestSheet: View {
+    @ObservedObject var model: DashboardModel
+    @State private var megabytes = 1024
+
+    var body: some View {
+        let state = model.speedTest
+        let running = state?.running ?? false
+        let result = state?.result
+        let writing = running && state?.phase == .writing
+        let reading = running && state?.phase == .reading
+        VStack(alignment: .leading, spacing: 16) {
+            Eyebrow(text: "Speed test")
+            Text(state?.name ?? "").font(Theme.text(17, .medium)).foregroundStyle(Theme.primary)
+            HStack(spacing: 14) {
+                SpeedDial(title: "WRITE", speed: writing ? state?.liveSpeed : (result?.writeSpeed ?? state?.writeSpeed),
+                          active: writing, tint: Theme.coral)
+                SpeedDial(title: "READ", speed: reading ? state?.liveSpeed : result?.readSpeed,
+                          active: reading, tint: Theme.emerald)
+            }
+            MiniBar(fraction: running ? (state?.fraction ?? 0) : (result == nil ? 0 : 1))
+            Group {
+                if let failure = state?.failure {
+                    Text(failure).foregroundStyle(Theme.amber)
+                } else if state?.writable == false {
+                    Text("This volume is read-only. Turn on Allow writes for it on the Volumes tab to test it.").foregroundStyle(Theme.amber)
+                } else if running {
+                    Text(writing ? "Writing a test file…" : "Reading it back…").foregroundStyle(Theme.secondary)
+                } else if let result {
+                    Text("\(DroboVolumeAction.size(UInt64(result.bytes))) written and read back, bypassing the Mac's file cache. The test file has been removed.")
+                        .foregroundStyle(Theme.secondary)
+                } else {
+                    Text("Writes one large file of random data to the volume, then reads it back, and removes it. Speeds are in megabytes per second. A Drobo that is rebuilding, or busy with other work, will be slower.")
+                        .foregroundStyle(Theme.secondary)
+                }
+            }
+            .font(Theme.text(12)).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Picker("Test size", selection: $megabytes) {
+                    Text("1 GB").tag(1024)
+                    Text("5 GB").tag(5120)
+                    Text("20 GB").tag(20480)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 190).disabled(running)
+                Spacer()
+                Button("Close") { model.closeSpeedTest() }.buttonStyle(PillButtonStyle())
+                if running {
+                    Button("Stop") { model.stopSpeedTest() }.buttonStyle(PillButtonStyle(kind: .danger))
+                } else {
+                    Button(result == nil ? "Start" : "Run Again") { model.startSpeedTest(megabytes: megabytes) }
+                        .buttonStyle(PillButtonStyle(kind: .primary, icon: "speedometer"))
+                        .disabled(state?.writable == false)
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: 480)
+        .background(Backdrop().ignoresSafeArea())
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// One half-circle dial with the speed in its middle.
+private struct SpeedDial: View {
+    let title: String
+    let speed: Double?
+    let active: Bool
+    let tint: Color
+
+    /// Full scale: above what a Drobo 8D was seen to do over Thunderbolt (about 600 MB/s reading).
+    private let scale = 800.0
+
+    var body: some View {
+        let fraction = min(max((speed ?? 0) / scale, 0), 1)
+        VStack(spacing: 6) {
+            ZStack {
+                Circle().trim(from: 0, to: 0.75)
+                    .stroke(Color.white.opacity(0.07), style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .rotationEffect(.degrees(135))
+                Circle().trim(from: 0, to: 0.75 * fraction)
+                    .stroke(tint.opacity(speed == nil ? 0 : 1), style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .rotationEffect(.degrees(135))
+                    .animation(.easeOut(duration: 0.25), value: fraction)
+                VStack(spacing: 0) {
+                    Text(speed.map { String(format: "%.0f", $0) } ?? "–")
+                        .font(Theme.mono(34, .medium)).foregroundStyle(speed == nil ? Theme.tertiary : Theme.primary)
+                        .contentTransition(.numericText())
+                    Text("MB/s").font(Theme.text(10.5)).foregroundStyle(Theme.tertiary)
+                }
+            }
+            .frame(width: 150, height: 150)
+            Text(title).font(Theme.text(10, .medium)).tracking(1.6)
+                .foregroundStyle(active ? tint : Theme.tertiary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }

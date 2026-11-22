@@ -86,6 +86,7 @@ administrator password if the folder needs one.
 drobo                       # Drobo: healthy · 7.4 TB of 34.4 TB used (22%) · 9/9 drives
 drobo --short               # Drobo ok 22%
 drobo all                   # device, every bay, every volume
+drobo speedtest 1           # write and read speed of the volume on unit 1 (it must allow writes)
 drobo drive 3               # one bay
 drobo volume "Time Machine" # one volume, by name or unit number
 drobo get percent           # one bare value; `drobo keys` lists them

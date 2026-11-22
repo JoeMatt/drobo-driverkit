@@ -27,6 +27,8 @@ commands
   history                each bay over the last 14 days: flagged, recovered, restarts, and what the pattern suggests
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
+  speedtest <name|unit>  write and read speed of a mounted volume that allows writes, in MB/s; --size 1GB|5GB|... (default 1GB).
+                         Writes one test file, reads it back and removes it; --json for the numbers alone
 
 commands that change the Drobo (each prints what it would do and stops unless --yes-really is given;
 all refuse while any Drobo volume is mounted)
@@ -615,6 +617,45 @@ func run() -> Int32 {
                                  : "--size needs a size such as 16TB, 500GB or max")
         }
         return runVolume(.create(bytes: bytes), state: state)
+    case "speedtest":
+        guard demo == nil else { fail("not available with --demo") }
+        guard positional.count > 1 else { fail("speedtest needs a volume name or unit number") }
+        guard let lun = state.lun(positional[1]), let volume = state.volumes.first(where: { $0.lun == lun.id }) else {
+            FileHandle.standardError.write(Data("no mounted volume by that name or unit\n".utf8))
+            return 1
+        }
+        guard lun.writable else {
+            FileHandle.standardError.write(Data("\(volume.name) is read-only. Turn on Allow writes for it in the app first.\n".utf8))
+            return 1
+        }
+        guard let bytes = DroboVolumeAction.parseSize(sizeText ?? "1GB", max: 0), bytes >= 64 << 20 else {
+            fail("--size needs a size of at least 64 MB, such as 1GB or 5GB")
+        }
+        let showProgress = !json && isatty(STDOUT_FILENO) != 0
+        var lastPhase: DroboMonitor.SpeedTestPhase?
+        let outcome = DroboMonitor.speedTest(on: volume.id, megabytes: Int(bytes >> 20)) { phase, fraction, speed in
+            guard showProgress else { return }
+            if let last = lastPhase, last != phase { print("") }
+            lastPhase = phase
+            print(String(format: "\r%@ %3.0f%%  %.0f MB/s   ", phase == .writing ? "write" : "read ", fraction * 100, speed), terminator: "")
+            fflush(stdout)
+        }
+        if showProgress { print("") }
+        switch outcome {
+        case .success(let result):
+            if json {
+                printJSON(["volume": volume.name, "unit": lun.id, "bytes": result.bytes,
+                           "write_mb_per_s": NSDecimalNumber(string: String(format: "%.1f", result.writeSpeed)),
+                           "read_mb_per_s": NSDecimalNumber(string: String(format: "%.1f", result.readSpeed))])
+            } else {
+                print(String(format: "%@: write %.0f MB/s, read %.0f MB/s (%@ test file, file cache bypassed)",
+                             volume.name, result.writeSpeed, result.readSpeed, human(UInt64(result.bytes))))
+            }
+            return 0
+        case .failure(let failure):
+            FileHandle.standardError.write(Data((failure.text + "\n").utf8))
+            return 1
+        }
     case "volume" where positional.count > 1 && positional[1] == "format":
         guard demo == nil else { fail("not available with --demo") }
         guard positional.count > 2, let unit = Int(positional[2]), (0..<32).contains(unit) else {
@@ -772,7 +813,7 @@ func run() -> Int32 {
 }
 
 // A command that changes the Drobo runs once, whatever --watch says.
-let changesDrobo = command == "reset" ||
+let changesDrobo = command == "reset" || command == "speedtest" ||
     (command == "volume" && positional.count > 1 && ["create", "delete", "format"].contains(positional[1]))
 if let watch, !changesDrobo {
     while true {
