@@ -16,7 +16,7 @@ longer runs on current Macs. Firmware update, resize and anything per-drive stay
 |---|---|---|
 | Create a volume | system operation `0x20` (read the next unique volume ID), then `0x12` (size in bytes, flags 0, that ID) | A new, empty logical unit. Nothing existing changes. Drobo volumes are thin: the size is what the Mac sees, not space set aside |
 | Delete a volume | system operation `0x13` (unique ID, unit number) | That unit and everything stored in it are gone. The space returns to the pool |
-| Reset | system operation `0x02`, one zero byte | The Drobo deletes its settings, marks its disk pack to be formatted, and restarts. Every drive in it is erased, failed ones included |
+| Reset | system operation `0x02`, one zero byte | The Drobo deletes its settings, marks its disk pack to be formatted, and restarts. Every drive in it is erased, failed ones included. On the 8D it came back in about four minutes with default settings and one new, blank volume of the maximum size, and drives it had marked failed were members again |
 
 Not built: resize (operation `0x0F` is not decoded), renaming a volume, formatting (that is
 Disk Utility's job once the unit allows writes).
@@ -97,8 +97,9 @@ restart the Drobo to finish" (observed for delete; protocol notes 11.26).
 - **Delete**: the Drobo answers within seconds and the space is free. The driver stops
   presenting the unit at once, and the app and the command no longer list it; the Drobo
   itself drops it at its next restart.
-- **Reset**: the Drobo restarts and formats its drives, which takes several minutes. The
-  driver sees it leave and come back as for any restart.
+- **Reset**: the Drobo restarts and formats its drives, which took about four minutes on the
+  8D. The driver sees it leave and come back as for any restart. It comes back with one blank
+  volume already made, so the next step is Allow writes and Disk Utility, not New Volume.
 
 ## Test plan
 
@@ -120,6 +121,6 @@ notes 11.26. Stop at the first step that does not behave as described.
    from `drobo volumes`, the restart-needed alert, event 500 in the Drobo's log. **Done on
    the 8D with v0.31.1** (response 1 in 4 s; the unit's removal from the list is v0.31.2).
 4. `drobo reset`. Expect response 1 or the Drobo disconnecting, a restart, and afterwards an
-   empty or freshly formatted pack.
+   empty or freshly formatted pack. **Done on the 8D with v0.31.1.**
 5. `drobo volume create`. Expect response 1 and a new unit, at once or after a restart.
 6. Allow writes on the new unit, erase it in Disk Utility, copy a file, eject, remount, compare.

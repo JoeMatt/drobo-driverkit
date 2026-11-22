@@ -1568,7 +1568,19 @@ unit held two volumes (units 0 and 5) and all nine drives, the two failed ones i
 - Two seconds later the Drobo was gone from the bus, and eleven seconds after that the driver
   was back at `waiting-for-firmware`: the request is answered first and the restart follows,
   as the firmware's code says.
-RESET_AFTERMATH
+- **About four minutes after the request the Drobo was back and reported healthy**, with
+  uptime 3 minutes: status flags `0x00018000` (none of the alert bits), 0 bytes used, 41.79 TB
+  free, all nine drives present.
+- **Both drives that had been "Failed, replace" came back as healthy members.** The reset
+  wiped the pack's record of them; whether they are in fact sound is another matter, and the
+  Drobo will find out again under load.
+- **The Drobo made one volume by itself**: unit 0, the maximum size (2^38 blocks, 128 TiB),
+  unique ID 1000, next ID 1001, partition scheme 0, partition count 0, format type `01`. The
+  other fifteen records were the never-used kind. So a reset does not leave an empty pack,
+  and nothing has to be created before the unit can be used.
+- **Settings went back to defaults**: options page `31` read flags `06` (dual disk redundancy
+  off, where it had been `07`), spin-down still 14 minutes; thresholds 85 and 95 as before.
+- The driver came back through its normal bring-up with no help: stage `ready`, one unit.
 Not yet run: create.
 
 ## 12. Open questions that need the hardware
@@ -1587,7 +1599,7 @@ Not yet run: create.
    M1, but that is not proof.
 7. Volume management (11.26): what bit 0 of the create flags byte does; which way Dashboard
    gets the unique ID for an 8D; whether the LUN table in BAR1 changes without a restart after
-   a create or delete; what a reset does to drives that were already marked failed.
+   a create (it does not after a delete, and a reset returns failed drives to service: 11.26).
 
 Items 2–3 are answered by a read-only probe: map both BARs, read the `DroboPort` header,
 capabilities and tables, and log them. That needs the host-BAR-ready write first (the only

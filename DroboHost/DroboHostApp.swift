@@ -403,7 +403,7 @@ final class DashboardModel: ObservableObject {
                 message = "\(action.label): \(outcome.text)"
                 awaitingVolume = nil
             } else if !latest.driverPresent {
-                message = action == .reset ? "Reset: the Drobo has disconnected. It is erasing its drives and restarting."
+                message = action == .reset ? "Reset: the Drobo has disconnected. It is erasing its drives and restarting, which takes about five minutes."
                                            : "\(action.label): the Drobo disconnected before answering."
                 awaitingVolume = nil
             }
@@ -486,7 +486,7 @@ final class DashboardModel: ObservableObject {
     /// be done now and, if so, puts up the confirmation sheet. Nothing is sent here.
     func requestVolume(_ action: DroboVolumeAction) {
         guard Demo.scenario == nil else {
-            message = "Not available with made-up data."
+            message = "Not available in the demo."
             return
         }
         refresh()

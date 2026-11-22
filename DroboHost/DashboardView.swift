@@ -999,7 +999,7 @@ struct VolumeConfirmSheet: View {
                         Button(preset) { sizeText = preset }.buttonStyle(PillButtonStyle(compact: true))
                     }
                 }
-                Text("The size is what the Mac sees, not space set aside: the Drobo stores only what is written, so a volume can be larger than the drives installed now.")
+                Text("This is the most the volume can ever hold. A Drobo volume only takes up the space of the files in it, so it can be larger than the drives installed today.")
                     .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let action {
@@ -1011,7 +1011,7 @@ struct VolumeConfirmSheet: View {
                 Text(sizeProblem).font(Theme.text(12)).foregroundStyle(Theme.amber)
             }
             if request.action == .reset {
-                Text("Failed drives left in their bays are erased with the rest. A reset does not repair a drive.")
+                Text("Everything on every drive goes, and the Drobo's name and settings return to their defaults. Drives the Drobo had marked as failed are erased too and put back into use; a reset does not repair a faulty drive, so replace it first. The Drobo restarts and comes back with one blank volume.")
                     .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)

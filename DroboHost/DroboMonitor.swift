@@ -789,23 +789,23 @@ enum DroboMonitor {
     static func volumeBlocker(_ action: DroboVolumeAction, snapshot: DroboSnapshot, volumes: [DroboVolume]) -> String? {
         guard snapshot.driverPresent, snapshot.ready else { return "The Drobo is not connected or not ready." }
         guard snapshot.volumeManagementAvailable else {
-            return "Volume management needs driver 0.31.0 or later. Open the app and press Activate on the Advanced tab first."
+            return "Changing volumes needs driver 0.31.0 or later. Open the app and press Activate on the Advanced tab first."
         }
-        guard snapshot.healthAvailable else { return "The Drobo is not answering status requests." }
+        guard snapshot.healthAvailable else { return "The Drobo is not responding yet. Try again in a few seconds." }
         guard !snapshot.serial.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return "The driver has not read the Drobo's serial number, which is needed to confirm."
+            return "The Drobo's serial number has not been read yet, and it is needed to confirm. Try again in a few seconds."
         }
-        if snapshot.volumeState == 1 { return "Another volume command is still running." }
+        if snapshot.volumeState == 1 { return "Another change to the volumes is still in progress." }
         if !volumes.isEmpty {
             let names = volumes.map(\.name).sorted().joined(separator: ", ")
-            return "Drobo volumes are mounted (\(names)). Eject them first: nothing is sent while a volume is mounted."
+            return "Eject the Drobo's volumes first (\(names)). Volumes cannot be changed while any of them is mounted."
         }
-        if snapshot.inflight != 0 { return "The Drobo's disks are in use. Wait for that to finish." }
+        if snapshot.inflight != 0 { return "One of the Drobo's disks is in use. Wait for that to finish and try again." }
         if action == .reset { return nil }
         guard let records = snapshot.volumeRecords else {
             return snapshot.volumeListFailed
-                ? "This Drobo did not answer the request for its volume list, so volumes cannot be managed."
-                : "The Drobo's volume list has not been read yet. Try again in a few seconds."
+                ? "This Drobo does not report its list of volumes, so they cannot be changed from here."
+                : "The Drobo's list of volumes has not been read yet. Try again in a few seconds."
         }
         switch action {
         case .delete(let unit):
@@ -814,7 +814,7 @@ enum DroboMonitor {
             if snapshot.maxVolumes > 0, records.count >= snapshot.maxVolumes {
                 return "The Drobo already has the most volumes it allows (\(snapshot.maxVolumes))."
             }
-            if bytes == 0 || bytes % 512 != 0 { return "The size must be a whole number of 512-byte blocks." }
+            if bytes == 0 || bytes % 512 != 0 { return "That size is not valid. Give a size such as 16TB or 500GB." }
             if snapshot.maxVolumeBytes > 0, bytes > snapshot.maxVolumeBytes {
                 return "The largest volume this Drobo allows is \(DroboVolumeAction.size(snapshot.maxVolumeBytes))."
             }
@@ -875,12 +875,12 @@ enum DroboMonitor {
         let result = IOConnectCallStructMethod(connection, 3, input, input.count, nil, nil)
         switch result {
         case KERN_SUCCESS: return nil
-        case kIOReturnBusy: return "The driver refused: the Drobo's disks are in use or another command is running. Nothing was sent."
-        case kIOReturnNotReady: return "The Drobo is not ready."
-        case kIOReturnNotPermitted: return "The driver refused: its copy of the Drobo's volume list is older than 15 seconds or does not match the request. Nothing was sent. Try again in a few seconds."
-        case kIOReturnNotPrivileged: return "The driver refused: the serial number did not match. Nothing was sent."
-        case kIOReturnBadArgument: return "The driver refused: the size is not one this Drobo allows. Nothing was sent."
-        default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + "). Nothing was sent."
+        case kIOReturnBusy: return "The Drobo is busy: one of its disks is in use or another command is running. Nothing was sent."
+        case kIOReturnNotReady: return "The Drobo is not ready. Nothing was sent."
+        case kIOReturnNotPermitted: return "The Drobo's list of volumes was out of date or had changed. Nothing was sent. Wait a few seconds and try again."
+        case kIOReturnNotPrivileged: return "The serial number did not match this Drobo. Nothing was sent."
+        case kIOReturnBadArgument: return "This Drobo does not allow a volume of that size. Nothing was sent."
+        default: return "The command was not accepted (code 0x" + String(UInt32(bitPattern: result), radix: 16) + "). Nothing was sent."
         }
     }
 
@@ -891,25 +891,25 @@ enum DroboMonitor {
         case 2:
             switch action {
             case .create:
-                return (true, "The Drobo created the volume (its ID is \(snapshot.volumeUniqueID)). Restart the Drobo: the new unit appears as a disk after that. Then turn on Allow writes for it and erase it in Disk Utility.")
+                return (true, "The Drobo created the volume. Restart the Drobo and the new volume appears as a blank disk. To start using it, turn on Allow writes for it and erase it in Disk Utility.")
             case .delete(let unit):
-                return (true, "The Drobo deleted the volume on unit \(unit). Its space is free now; the Drobo finishes the change when it next restarts.")
+                return (true, "The Drobo deleted the volume on unit \(unit) and its space is free. Restart the Drobo to finish.")
             case .reset:
-                return (true, "The Drobo accepted the reset. It erases its drives and restarts, which takes several minutes.")
+                return (true, "The Drobo accepted the reset. It is erasing its drives and restarting, which takes about five minutes. It comes back with one blank volume.")
             }
         default:
-            let step = snapshot.volumeStep == 1 ? "the request for a new volume ID" : "the command"
+            let step = snapshot.volumeStep == 1 ? "the first step of creating the volume" : "the command"
             switch snapshot.volumeResult {
             case 0xFFFF_FFFF:
                 return (false, action == .reset
                     ? "The Drobo did not answer the reset within two minutes. It may be restarting: check its lights before trying anything else."
-                    : "The Drobo did not answer \(step) within two minutes. Whether it was carried out is not known; look at the volume list before trying again.")
+                    : "The Drobo did not answer \(step) within two minutes, so it is not known whether it was carried out. Check the list of volumes before trying again.")
             case 0xFFFF_FFFE:
-                return (false, "The driver dropped the command before sending it: the Drobo's disks came into use, or its volume list changed. Nothing was sent.")
+                return (false, "Nothing was sent: one of the Drobo's disks came into use, or its list of volumes changed. Try again.")
             case 0xFFFF_FFFD:
-                return (false, "The Drobo handed out volume ID \(snapshot.volumeUniqueID), which a volume already has. The create was not sent.")
+                return (false, "The Drobo offered an identifier that another volume already has, so the volume was not created. Nothing was changed.")
             default:
-                return (false, "The Drobo refused \(step) (response \(snapshot.volumeResult), SCSI status \(snapshot.volumeSCSIStatus)).")
+                return (false, "The Drobo did not accept \(step) (code \(snapshot.volumeResult)/\(snapshot.volumeSCSIStatus)).")
             }
         }
     }

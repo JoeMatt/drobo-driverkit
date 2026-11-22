@@ -587,7 +587,7 @@ func runVolume(_ action: DroboVolumeAction, state: State) -> Int32 {
             return outcome.ok ? 0 : 1
         }
     }
-    say("The driver did not report an answer. Look at `drobo volumes` before trying again.")
+    say("No answer was reported. Check `drobo volumes` before trying again.")
     return 1
 }
 
