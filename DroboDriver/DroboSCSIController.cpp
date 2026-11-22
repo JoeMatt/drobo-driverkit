@@ -3063,8 +3063,29 @@ DroboSCSIController::HealthResponse()
             iv->volumeState = done ? 2 : 3;
             iv->lastCommandSRB = srbResponse;
             iv->statCommands++;
-            if (done && iv->volumeCommand != kDroboVolumeCommandReset) {
-                // The Drobo's LUN table should change now; look until it has.
+            if (done && iv->volumeCommand == kDroboVolumeCommandDelete && iv->volumeUnit < 32 &&
+                iv->luns[iv->volumeUnit].present) {
+                // The 8D keeps the deleted unit in its LUN table, at its old size, until it
+                // restarts (protocol notes 11.26). Its disk must not stay on offer: take the
+                // unit away here and announce the disks again.
+                iv->luns[iv->volumeUnit].present = false;
+                iv->luns[iv->volumeUnit].blockCount = 0;
+                iv->writableMask &= ~(1u << iv->volumeUnit);
+                iv->statLUNRescans++;
+                if (iv->targetQueue != nullptr) {
+                    iv->targetQueue->DispatchAsync(^{
+                        ivars->targetCallInFlight = true;
+                        UserDestroyTargetForID(0);
+                        OSDictionary * target = OSDictionary::withCapacity(1);
+                        ivars->createTargetResult = (uint32_t) UserCreateTargetForID(0, target);
+                        OSSafeReleaseNULL(target);
+                        ivars->targetCallInFlight = false;
+                    });
+                }
+            }
+            if (done && iv->volumeCommand == kDroboVolumeCommandCreate) {
+                // A new unit shows in the LUN table only after the Drobo restarts, as far as
+                // was seen; look for a minute all the same.
                 iv->lunRescansLeft = kVolumeRescans;
                 iv->lunRescanAt = mach_absolute_time() + (uint64_t) kVolumeRescanMS * iv->ticksPerMillisecond;
             }

@@ -342,7 +342,7 @@ struct DroboSnapshot {
         (0x0800, "Mismatched disks"),
         (0x1000, "Unknown firmware version"),
         (0x2000, "New firmware installed"),
-        (0x4000, "New volume available after restart"),
+        (0x4000, "Volumes changed: restart the Drobo to finish"),
         (0x8000, "Status bit 0x8000 (meaning not documented)"),
         (0x1_0000, "Status bit 0x10000 (meaning not documented)"),
         (0x1000_0000, "Unknown error"),
@@ -356,6 +356,9 @@ struct DroboSnapshot {
     }
 
     var isRebuilding: Bool { (statusFlags ?? 0) & 0x0200 != 0 || relayoutCount > 0 }
+    /// The Drobo says its volumes changed and it has to restart before the units it presents
+    /// match (status bit 0x4000; seen set right after a delete, protocol notes 11.26).
+    var restartNeeded: Bool { (statusFlags ?? 0) & 0x4000 != 0 }
 }
 
 enum DroboMonitor {
@@ -735,6 +738,10 @@ enum DroboMonitor {
         let known = volumeNamesOnDisk()
         return snapshot.lunBlocks.enumerated().compactMap { index, blocks in
             guard blocks > 1 else { return nil }
+            // A unit the Drobo still presents but whose volume it has deleted (it keeps
+            // presenting it until it restarts) is not a volume any more.
+            if let records = snapshot.volumeRecords, !records.isEmpty || snapshot.restartNeeded,
+               !records.contains(where: { $0.unit == index }) { return nil }
             return DroboLUN(id: index,
                             bytes: blocks * 512,
                             volumeNames: volumes.filter { $0.lun == index }.map(\.name),
@@ -884,9 +891,9 @@ enum DroboMonitor {
         case 2:
             switch action {
             case .create:
-                return (true, "The Drobo created the volume (its ID is \(snapshot.volumeUniqueID)). It appears as a new disk once the Drobo publishes it; if it does not within a minute, restart the Drobo. Then turn on Allow writes for it and erase it in Disk Utility.")
+                return (true, "The Drobo created the volume (its ID is \(snapshot.volumeUniqueID)). Restart the Drobo: the new unit appears as a disk after that. Then turn on Allow writes for it and erase it in Disk Utility.")
             case .delete(let unit):
-                return (true, "The Drobo deleted the volume on unit \(unit).")
+                return (true, "The Drobo deleted the volume on unit \(unit). Its space is free now; the Drobo finishes the change when it next restarts.")
             case .reset:
                 return (true, "The Drobo accepted the reset. It erases its drives and restarts, which takes several minutes.")
             }

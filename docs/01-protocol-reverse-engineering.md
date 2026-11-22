@@ -1494,12 +1494,11 @@ the header. The driver asked for 15 until v0.30.1; the page's own length field s
   two minutes, `0xFFFFFFFE` dropped by the driver unsent, `0xFFFFFFFD` ID in use),
   `VolumeSCSIStatus`, `VolumeUnit`, `VolumeUniqueID`, `MaxVolumes`, `MaxVolumeBytes`,
   `VolumeListFailed`, `LUNRescans`; `CommandFormat` is 6.
-- After a create or delete the Drobo answers, the driver reads the LUN table in BAR1 again
-  every 4 seconds for up to a minute. When it has changed, and no block I/O is in flight, the
-  driver takes the new table and announces its SCSI target again, with writing off for every
-  unit that changed. Whether the 8D changes that table without a restart was not known when
-  this was written (drobo-utils has a status bit `0x4000`, "new volume available after
-  restart").
+- After a delete the Drobo answers, the driver stops presenting that unit and announces its
+  SCSI target again (v0.31.2; the 8D itself keeps the unit in its LUN table until it
+  restarts, see "On hardware"). After a create it reads the LUN table in BAR1 again every 4
+  seconds for up to a minute and, if it has changed and no block I/O is in flight, takes the
+  new table and announces the target again, with writing off for every unit that changed.
 - `tests/volume_request_bytes.cpp` builds all four requests with the driver's own functions
   and compares them with the table above.
 
@@ -1542,6 +1541,24 @@ the volume list read afterwards):*
 - The capacity page's "used" fell from 7.4 TB to 404 GB.
 - Whether the LUN table changes without a restart was not observed: the Drobo was restarted
   before the driver's re-read could show it.
+
+*Delete, driver v0.31.1, sent with `drobo volume delete 4` while the driver's status was read
+twice a second:*
+
+- Unit 4 (2.2 TB, ID 1006), nothing mounted. Sent `EA 10 00 13 00 00 21 00 04 00` with data
+  `03 EE 04 00`. **Answered in about 4 seconds with SRB response 1, SCSI status 0.**
+- The volume list showed it at the next poll: unit 4 size 0, format type `20`, ID 1006 kept.
+- **Status bit `0x4000` came on** (flags `0x8050` → `0xC050`). drobo-utils calls it "new
+  volume available after restart"; here it followed a delete, so it reads as "the volumes
+  changed and a restart is needed" **[inf]**.
+- **The LUN table in BAR1 did not change**: more than a minute later unit 4 was still listed
+  present at its old size. So after a delete the 8D goes on presenting the dead unit until it
+  restarts. The driver's re-read of the table (15 tries, 4 s apart) found nothing, as it
+  would. Since v0.31.2 the driver takes the deleted unit away itself and announces its disks
+  again, and the app and the command drop a unit whose volume the list no longer has.
+- This also explains the first run above **[inf]**: the app kept showing the deleted volume
+  as an ordinary unmounted one, so it was deleted "again", and a delete of an already-deleted
+  unit is what was left waiting. Not reproduced on purpose.
 
 Not yet run: create, reset.
 

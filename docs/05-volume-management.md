@@ -86,11 +86,17 @@ longer be looked up by name with `drobo volume <name>`; use its unit number.
 
 ## After each operation
 
-- **Create**: the driver looks at the Drobo's LUN table for up to a minute and announces the
-  disks again when the new unit shows up. If it does not, restart the Drobo. Then turn on
-  Allow writes for the unit and erase it in Disk Utility (GUID partition map, APFS or Mac OS
-  Extended).
-- **Delete**: the same table check; the unit's disk disappears.
+The 8D applies a volume change to the units it presents only when it restarts; until then
+its status has bit `0x4000` set, which the app and the command show as "Volumes changed:
+restart the Drobo to finish" (observed for delete; protocol notes 11.26).
+
+- **Create**: restart the Drobo (Advanced → Restart…, or its power switch). The new unit
+  appears as a disk after that. Then turn on Allow writes for it and erase it in Disk Utility
+  (GUID partition map, APFS or Mac OS Extended). The driver also looks at the LUN table for a
+  minute in case a unit shows up without a restart.
+- **Delete**: the Drobo answers within seconds and the space is free. The driver stops
+  presenting the unit at once, and the app and the command no longer list it; the Drobo
+  itself drops it at its next restart.
 - **Reset**: the Drobo restarts and formats its drives, which takes several minutes. The
   driver sees it leave and come back as for any restart.
 
@@ -110,8 +116,9 @@ notes 11.26. Stop at the first step that does not behave as described.
    worked before still does. (Reads only.)
 2. Refusals, nothing sent: each command without `--yes-really`; with a wrong serial; with a
    volume mounted.
-3. `drobo volume delete <unit>` on one unit. Expect response 1, the unit gone from `drobo
-   volumes`, event 500 in the Drobo's log.
+3. `drobo volume delete <unit>` on one unit. Expect response 1 within seconds, the unit gone
+   from `drobo volumes`, the restart-needed alert, event 500 in the Drobo's log. **Done on
+   the 8D with v0.31.1** (response 1 in 4 s; the unit's removal from the list is v0.31.2).
 4. `drobo reset`. Expect response 1 or the Drobo disconnecting, a restart, and afterwards an
    empty or freshly formatted pack.
 5. `drobo volume create`. Expect response 1 and a new unit, at once or after a restart.

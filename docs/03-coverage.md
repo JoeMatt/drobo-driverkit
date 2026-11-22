@@ -5,7 +5,7 @@ What the original Drobo software did, and where this project stands. Status valu
 on hardware), **unsupported** (implemented, but the hardware or firmware refuses it on a stock
 unit, so it cannot work for users), **partial**, **no**.
 
-Last updated for driver v0.31.0.
+Last updated for driver v0.31.2.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -66,9 +66,9 @@ protocol reference are marked as needing that analysis.
 | Shut down / standby | vendor `EA` command `0D` | Shut Down | unverified |
 | Restart | unknown | not implemented | no: needs Dashboard analysis |
 | Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons; privileged helper and administrator prompt for standard accounts) |
-| Volume list with each volume's own ID | MODE SENSE `3A/07` (protocol notes 11.26) | read with the other pages since v0.31.0; `drobo volumes`, Volumes tab | unverified |
+| Volume list with each volume's own ID | MODE SENSE `3A/07` (protocol notes 11.26) | read with the other pages since v0.31.0; `drobo volumes`, Volumes tab | **verified** on the 8D |
 | Create a volume | system operations `20` then `12` (11.26) | Volumes → New Volume…, `drobo volume create`; spec in [05-volume-management.md](05-volume-management.md) | unverified |
-| Delete a volume | system operation `13` (11.26) | Volumes → Delete…, `drobo volume delete <unit>` | unverified |
+| Delete a volume | system operation `13` (11.26) | Volumes → Delete…, `drobo volume delete <unit>` | **verified** on the 8D from the command (v0.31.1): answered in 4 s. The Drobo keeps presenting the unit until it restarts; the driver hides it from v0.31.2, and that part is unverified |
 | Resize volumes | system operation `0F`, payload not decoded (11.20) | not implemented | no |
 | Format a volume | host side | Disk Utility, once writing is on | n/a |
 | Dim lights / LED brightness | unknown | not implemented | no: needs Dashboard analysis |
