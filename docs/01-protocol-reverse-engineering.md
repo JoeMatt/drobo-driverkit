@@ -1560,7 +1560,16 @@ twice a second:*
   as an ordinary unmounted one, so it was deleted "again", and a delete of an already-deleted
   unit is what was left waiting. Not reproduced on purpose.
 
-Not yet run: create, reset.
+*Reset, driver v0.31.1, sent with `drobo reset` at 21:24:29, status read twice a second.* The
+unit held two volumes (units 0 and 5) and all nine drives, the two failed ones included.
+
+- Sent `EA 10 00 02 <sequence> 00 21 00 01 00` with one zero byte. **Answered within the same
+  second with SRB response 1, SCSI status 0.**
+- Two seconds later the Drobo was gone from the bus, and eleven seconds after that the driver
+  was back at `waiting-for-firmware`: the request is answered first and the restart follows,
+  as the firmware's code says.
+RESET_AFTERMATH
+Not yet run: create.
 
 ## 12. Open questions that need the hardware
 
