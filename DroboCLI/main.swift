@@ -31,6 +31,8 @@ commands
 commands that change the Drobo (each prints what it would do and stops unless --yes-really is given;
 all refuse while any Drobo volume is mounted)
   volume create          a new volume; --size <n>TB|<n>GB|max (default max, the largest the Drobo allows)
+  volume format <unit>   makes a new, blank volume usable: allows writing to it and puts an empty file system on it
+                         --name <name> (required), --fs apfs|hfs (default apfs). Refuses a unit that is not blank
   volume delete <unit>   DELETES that volume and everything in it
   reset                  ERASES every drive in the Drobo and its settings, then the Drobo restarts
                          --serial <serial>: the Drobo's serial number (`drobo get serial`), as confirmation;
@@ -490,6 +492,8 @@ var baySlot: Int?
 var sizeText: String?
 var typedSerial: String?
 var yesReally = false
+var volumeName: String?
+var fileSystemText = "apfs"
 
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -522,6 +526,12 @@ while !arguments.isEmpty {
         guard !arguments.isEmpty else { fail("--serial needs the Drobo's serial number") }
         typedSerial = arguments.removeFirst()
     case "--yes-really": yesReally = true
+    case "--name":
+        guard !arguments.isEmpty else { fail("--name needs a volume name") }
+        volumeName = arguments.removeFirst()
+    case "--fs":
+        guard !arguments.isEmpty else { fail("--fs needs apfs or hfs") }
+        fileSystemText = arguments.removeFirst().lowercased()
     case "--demo":
         guard !arguments.isEmpty else { fail("--demo needs healthy or rebuilding") }
         demo = arguments.removeFirst()
@@ -605,6 +615,23 @@ func run() -> Int32 {
                                  : "--size needs a size such as 16TB, 500GB or max")
         }
         return runVolume(.create(bytes: bytes), state: state)
+    case "volume" where positional.count > 1 && positional[1] == "format":
+        guard demo == nil else { fail("not available with --demo") }
+        guard positional.count > 2, let unit = Int(positional[2]), (0..<32).contains(unit) else {
+            fail("volume format needs a unit number (see `drobo volumes`)")
+        }
+        guard let name = volumeName else { fail("volume format needs --name <name>") }
+        guard let fileSystem: DroboMonitor.FileSystem = ["apfs": .apfs, "hfs": .hfs][fileSystemText] else {
+            fail("--fs needs apfs or hfs")
+        }
+        print("Format unit \(unit) as \(fileSystem.label), named \(name). Only a blank unit is ever formatted.")
+        guard yesReally else {
+            print("Nothing was done. Add --yes-really to do it.")
+            return 2
+        }
+        let result = DroboMonitor.formatBlankUnit(unit, name: name, fileSystem: fileSystem) { print($0) }
+        if result.ok { print(result.text) } else { FileHandle.standardError.write(Data((result.text + "\n").utf8)) }
+        return result.ok ? 0 : 1
     case "volume" where positional.count > 1 && positional[1] == "delete":
         guard positional.count > 2, let unit = Int(positional[2]), (0..<256).contains(unit) else {
             fail("volume delete needs a unit number (see `drobo volumes`)")
@@ -746,7 +773,7 @@ func run() -> Int32 {
 
 // A command that changes the Drobo runs once, whatever --watch says.
 let changesDrobo = command == "reset" ||
-    (command == "volume" && positional.count > 1 && ["create", "delete"].contains(positional[1]))
+    (command == "volume" && positional.count > 1 && ["create", "delete", "format"].contains(positional[1]))
 if let watch, !changesDrobo {
     while true {
         print("\u{1B}[2J\u{1B}[H", terminator: "")

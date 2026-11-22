@@ -497,6 +497,31 @@ final class DashboardModel: ObservableObject {
         volumeRequest = VolumeRequest(action: action)
     }
 
+    /// The blank unit waiting for a name and a format (shown as a sheet).
+    @Published var formatRequest: DroboLUN?
+
+    /// Formats a new, blank volume: allows writing to it, then puts a file system on it.
+    func format(_ lun: DroboLUN, name: String, fileSystem: DroboMonitor.FileSystem) {
+        formatRequest = nil
+        guard Demo.scenario == nil else {
+            message = "Not available in the demo."
+            return
+        }
+        busy = true
+        message = "Preparing \(name)…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = DroboMonitor.formatBlankUnit(lun.id, name: name, fileSystem: fileSystem) { step in
+                DispatchQueue.main.async { self?.message = step }
+            }
+            DispatchQueue.main.async {
+                self?.message = result.text
+                self?.writableSeeded = false
+                self?.busy = false
+                self?.refresh()
+            }
+        }
+    }
+
     /// Second step, from the sheet, once the serial number has been typed.
     func confirmVolume(_ action: DroboVolumeAction, typedSerial: String) {
         volumeRequest = nil

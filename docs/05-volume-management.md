@@ -18,8 +18,14 @@ longer runs on current Macs. Firmware update, resize and anything per-drive stay
 | Delete a volume | system operation `0x13` (unique ID, unit number) | That unit and everything stored in it are gone. The space returns to the pool |
 | Reset | system operation `0x02`, one zero byte | The Drobo deletes its settings, marks its disk pack to be formatted, and restarts. Every drive in it is erased, failed ones included. On the 8D it came back in about four minutes with default settings and one new, blank volume of the maximum size, and drives it had marked failed were members again |
 
-Not built: resize (operation `0x0F` is not decoded), renaming a volume, formatting (that is
-Disk Utility's job once the unit allows writes).
+A Drobo volume has no name of its own: the name belongs to the file system put on it. So a
+new volume is a raw disk until it is formatted, and since v0.31.3 the app and the command do
+that too (`Format…`, `drobo volume format`): they allow writing to the unit and run
+`diskutil eraseDisk` with a GUID partition map and APFS or Mac OS Extended. They only ever
+format a unit macOS finds nothing on; erasing a volume that has contents stays Disk Utility's
+job.
+
+Not built: resize (operation `0x0F` is not decoded) and renaming a volume.
 
 ## Safety model
 
@@ -76,6 +82,7 @@ no I/O in flight at that instant, and anything another Mac is doing over a secon
 ```
 drobo volumes                                   # now with the Drobo's ID for each volume
 drobo volume create [--size 16TB|500GB|max] [--serial <serial>] [--yes-really]
+drobo volume format <unit> --name <name> [--fs apfs|hfs] [--yes-really]
 drobo volume delete <unit> [--serial <serial>] [--yes-really]
 drobo reset [--serial <serial>] [--yes-really]
 ```
@@ -91,15 +98,15 @@ its status has bit `0x4000` set, which the app and the command show as "Volumes 
 restart the Drobo to finish" (observed for delete; protocol notes 11.26).
 
 - **Create**: restart the Drobo (Advanced → Restart…, or its power switch). The new unit
-  appears as a disk after that. Then turn on Allow writes for it and erase it in Disk Utility
-  (GUID partition map, APFS or Mac OS Extended). The driver also looks at the LUN table for a
+  appears after that as "New volume, not formatted yet". Press Format…, give it a name and
+  pick APFS or Mac OS Extended. The driver also looks at the LUN table for a
   minute in case a unit shows up without a restart.
 - **Delete**: the Drobo answers within seconds and the space is free. The driver stops
   presenting the unit at once, and the app and the command no longer list it; the Drobo
   itself drops it at its next restart.
 - **Reset**: the Drobo restarts and formats its drives, which took about four minutes on the
   8D. The driver sees it leave and come back as for any restart. It comes back with one blank
-  volume already made, so the next step is Allow writes and Disk Utility, not New Volume.
+  volume already made, so the next step is Format…, not New Volume.
 
 ## Test plan
 
@@ -123,4 +130,6 @@ notes 11.26. Stop at the first step that does not behave as described.
 4. `drobo reset`. Expect response 1 or the Drobo disconnecting, a restart, and afterwards an
    empty or freshly formatted pack. **Done on the 8D with v0.31.1.**
 5. `drobo volume create`. Expect response 1 and a new unit, at once or after a restart.
-6. Allow writes on the new unit, erase it in Disk Utility, copy a file, eject, remount, compare.
+   **Done on the 8D with v0.31.2 from the app**; the unit appeared after a restart.
+6. `drobo volume format <unit> --name …`, copy a file, eject, remount, compare. **Done on the
+   8D with v0.31.3**: 256 MB, matching checksums.

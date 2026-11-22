@@ -99,6 +99,10 @@ struct ContentView: View {
             Text("All Drobo volumes are ejected first, then the Drobo is asked to restart. It takes several minutes to come back. This needs driver 0.27.0 or later and has not been verified on hardware yet. If the Drobo is rebuilding, leave it running.")
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
+        .sheet(item: $dashboard.formatRequest) { lun in
+            FormatVolumeSheet(lun: lun, cancel: { dashboard.formatRequest = nil },
+                              confirm: { name, fileSystem in dashboard.format(lun, name: name, fileSystem: fileSystem) })
+        }
         .sheet(item: $dashboard.volumeRequest) { request in
             VolumeConfirmSheet(request: request, snapshot: dashboard.snapshot, luns: dashboard.luns,
                                cancel: { dashboard.volumeRequest = nil },
@@ -576,9 +580,16 @@ struct ContentView: View {
                             Button("Open in Finder") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(PillButtonStyle(icon: "folder", compact: true))
                         }
-                        Button(lun.isMounted ? "Unmount" : "Mount") { dashboard.setMounted(!lun.isMounted, lun: lun) }
-                            .buttonStyle(PillButtonStyle(compact: true))
-                            .disabled(lun.bsdName == nil || dashboard.busy)
+                        if lun.looksBlank {
+                            Button("Format…") { dashboard.formatRequest = lun }
+                                .buttonStyle(PillButtonStyle(kind: .primary, icon: "externaldrive.badge.plus", compact: true))
+                                .disabled(dashboard.busy)
+                                .help("Gives this new volume a name and a file system so it can be mounted and used.")
+                        } else {
+                            Button(lun.isMounted ? "Unmount" : "Mount") { dashboard.setMounted(!lun.isMounted, lun: lun) }
+                                .buttonStyle(PillButtonStyle(compact: true))
+                                .disabled(lun.bsdName == nil || dashboard.busy)
+                        }
                         if lun.uniqueID != nil {
                             Button("Delete…") { dashboard.requestVolume(.delete(unit: lun.id)) }
                                 .buttonStyle(PillButtonStyle(kind: .danger, icon: "trash", compact: true))
@@ -1033,5 +1044,45 @@ struct VolumeConfirmSheet: View {
         .background(Backdrop().ignoresSafeArea())
         .preferredColorScheme(.dark)
         .onAppear { sizeText = "max" }
+    }
+}
+
+// MARK: Formatting a new volume
+
+/// Name and format for a volume the Drobo has made but nothing has been written to yet.
+struct FormatVolumeSheet: View {
+    let lun: DroboLUN
+    let cancel: () -> Void
+    let confirm: (String, DroboMonitor.FileSystem) -> Void
+
+    @State private var name = "Drobo"
+    @State private var fileSystem = DroboMonitor.FileSystem.apfs
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Eyebrow(text: "Format new volume")
+            Text("Unit \(lun.id), \(DroboVolumeAction.size(lun.bytes)). A new Drobo volume is empty space: it needs a name and a file system before the Mac can mount it.")
+                .font(Theme.text(12.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Text("Name").font(Theme.text(13)).frame(width: 52, alignment: .leading)
+                TextField("Name", text: $name).textFieldStyle(.roundedBorder)
+            }
+            Picker("Format", selection: $fileSystem) {
+                ForEach(DroboMonitor.FileSystem.allCases) { Text($0.label).tag($0) }
+            }
+            Text("APFS suits current Macs and Time Machine. Choose Mac OS Extended if an older Mac has to read the volume. This turns on Allow writes for the volume, which is new in this driver: keep another copy of anything you store here.")
+                .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { cancel() }.buttonStyle(PillButtonStyle())
+                Button("Format") { confirm(name, fileSystem) }
+                    .buttonStyle(PillButtonStyle(kind: .primary))
+                    .disabled(!DroboMonitor.validVolumeName(name))
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .background(Backdrop().ignoresSafeArea())
+        .preferredColorScheme(.dark)
     }
 }

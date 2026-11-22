@@ -1581,7 +1581,24 @@ unit held two volumes (units 0 and 5) and all nine drives, the two failed ones i
 - **Settings went back to defaults**: options page `31` read flags `06` (dual disk redundancy
   off, where it had been `07`), spin-down still 14 minutes; thresholds 85 and 95 as before.
 - The driver came back through its normal bring-up with no help: stage `ready`, one unit.
-Not yet run: create.
+*Create, driver v0.31.2, from the app's New Volume sheet by the maintainer, size "2TB". Read
+back afterwards; the driver's own record of the two requests was lost in the restart.*
+
+- **A second volume exists**: unit 1, unique ID 1001, and every record now gives 1002 as the
+  next ID. So operation `0x20` handed out 1001 and operation `0x12` was accepted with it.
+- Its size is 4294967160 blocks, 136 fewer than the 2 TiB asked for. That is the adjustment
+  seen in `HRManager::createLun` for sizes at the 2^32-block line (the constants `0x80000087`
+  and 135 in its entry checks), and the same odd size two of this unit's old volumes had.
+- **The new unit appeared in the LUN table only after the Drobo was restarted**, as with
+  delete. It is a raw disk: no partition map, partition scheme 0, format type `01`.
+- Formatting it is host work. With writing allowed for the unit, `diskutil eraseDisk` put a
+  GUID partition map and APFS on it in about 5 seconds, and 256 MB of random data written to
+  it came back with the same SHA-256 after an eject and remount (1969 write requests, no
+  errors; the driver's flush counter stayed at 0, so cache-flush forwarding is still
+  unexercised). That is the first checksum-verified write through this driver, on an empty
+  pack; backlog item 3 asks for more than this.
+
+All three operations have now been run on the 8D.
 
 ## 12. Open questions that need the hardware
 

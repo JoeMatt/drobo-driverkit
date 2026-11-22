@@ -272,10 +272,10 @@
           <p>Firmware updates and resizing a volume. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
         </div></div>
         <div class="shell wide reveal"><div class="core">
-          <span class="state warn"><i></i>New in 0.31 · partly verified</span>
+          <span class="state ok"><i></i>New in 0.31 · verified on an 8D</span>
           <h3>Create and delete volumes, reset the Drobo</h3>
           <p class="pull">Drobo Dashboard no longer runs on a current Mac, so until now there was no way to wipe an 8D and start again. There is now, in the app and as <span class="mono">drobo volume create</span>, <span class="mono">drobo volume delete</span> and <span class="mono">drobo reset</span>.</p>
-          <p>The commands were read out of Drobo Dashboard and checked against the 8D's own firmware. On a real 8D, delete and reset are verified: the reset took about four minutes and the unit came back empty, healthy and with one blank volume ready to format. Creating an additional volume has not been run on hardware yet. Each one asks you to type the Drobo's serial number, refuses while a Drobo volume is mounted, and the driver checks the request against the Drobo's own volume list before anything is sent. Delete and reset destroy data for good.</p>
+          <p>The commands were read out of Drobo Dashboard and checked against the 8D's own firmware. All three are verified on a real 8D: the reset took about four minutes and the unit came back empty, healthy and with one blank volume, and a new volume was created, formatted from the app's own Format step and written to with matching checksums. Each one asks you to type the Drobo's serial number, refuses while a Drobo volume is mounted, and the driver checks the request against the Drobo's own volume list before anything is sent. Delete and reset destroy data for good.</p>
         </div></div>
       </div>
     </div>

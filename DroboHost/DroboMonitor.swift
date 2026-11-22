@@ -111,10 +111,12 @@ struct DroboLUN: Identifiable {
     var knownNames: [String] = []
 
     var isMounted: Bool { !volumeNames.isEmpty }
+    /// macOS finds no volume on the unit: a new one that was never formatted, most likely.
+    var looksBlank: Bool { !isMounted && knownNames.isEmpty && bsdName != nil }
     /// What to call the unit: its mounted volumes, else the volumes known to be on it.
     var title: String {
         if isMounted { return volumeNames.joined(separator: ", ") }
-        return knownNames.isEmpty ? "Not mounted" : knownNames.joined(separator: ", ") + " (not mounted)"
+        return knownNames.isEmpty ? "New volume, not formatted yet" : knownNames.joined(separator: ", ") + " (not mounted)"
     }
 }
 
@@ -779,6 +781,90 @@ enum DroboMonitor {
         case kIOReturnNotPrivileged: return "The driver refused: the command was not confirmed."
         default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
         }
+    }
+
+    // MARK: Formatting a new volume
+
+    /// The file systems offered for a new volume, as diskutil names them.
+    enum FileSystem: String, CaseIterable, Identifiable {
+        case apfs = "APFS"
+        case hfs = "JHFS+"
+        var id: String { rawValue }
+        var label: String { self == .apfs ? "APFS" : "Mac OS Extended (Journaled)" }
+    }
+
+    /// True when macOS finds nothing at all on the disk: no partition map, no file system.
+    /// Only such a disk is ever formatted from here; anything else is Disk Utility's job.
+    static func diskIsBlank(_ bsdName: String) -> Bool {
+        guard let result = runTool("/usr/sbin/diskutil", ["list", "-plist", bsdName]), result.status == 0,
+              let plist = try? PropertyListSerialization.propertyList(from: Data(result.output.utf8), format: nil) as? [String: Any],
+              let disks = plist["AllDisksAndPartitions"] as? [[String: Any]], disks.count == 1, let disk = disks.first else {
+            return false
+        }
+        let partitions = disk["Partitions"] as? [[String: Any]] ?? []
+        let content = disk["Content"] as? String ?? ""
+        return partitions.isEmpty && content.isEmpty && disk["APFSVolumes"] == nil && disk["MountPoint"] == nil
+    }
+
+    static func validVolumeName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && trimmed == name && name.utf8.count <= 63 &&
+            !name.contains("/") && !name.contains(":") && !name.hasPrefix(".")
+    }
+
+    /// Makes a new, blank Drobo volume usable: lets the Mac write to that unit, then puts a
+    /// partition map and an empty file system with the given name on it. Refuses a unit that
+    /// has anything on it. Takes up to a minute; call it off the main thread.
+    static func formatBlankUnit(_ unit: Int, name: String, fileSystem: FileSystem,
+                                progress: (String) -> Void = { _ in }) -> (ok: Bool, text: String) {
+        guard validVolumeName(name) else {
+            return (false, "Give the volume a name without / or : and no spaces at either end.")
+        }
+        func current() -> (snapshot: DroboSnapshot, lun: DroboLUN?, mounted: [DroboVolume]) {
+            let snapshot = DroboMonitor.snapshot()
+            let mounted = volumes()
+            return (snapshot, luns(snapshot, volumes: mounted).first { $0.id == unit }, mounted)
+        }
+        var state = current()
+        guard state.snapshot.ready, let lun = state.lun, let bsd = lun.bsdName else {
+            return (false, "The Drobo has no disk for unit \(unit) right now. If the volume is new, restart the Drobo first.")
+        }
+        guard diskIsBlank(bsd) else {
+            return (false, "Unit \(unit) is not blank. To erase a volume that has something on it, use Disk Utility.")
+        }
+        if !lun.writable {
+            // Letting the Mac write to a unit makes the driver present all its disks again,
+            // which would pull a mounted volume away.
+            guard state.mounted.isEmpty else {
+                let names = state.mounted.map(\.name).sorted().joined(separator: ", ")
+                return (false, "Eject the Drobo's volumes first (\(names)).")
+            }
+            progress("Allowing the Mac to write to the new volume…")
+            if let failure = send(.setWritable, argument: state.snapshot.writableMask | (1 << UInt32(unit))) {
+                return (false, failure)
+            }
+            let deadline = Date().addingTimeInterval(45)
+            repeat {
+                Thread.sleep(forTimeInterval: 1)
+                state = current()
+            } while Date() < deadline && !(state.lun?.writable == true && state.lun?.bsdName != nil)
+        }
+        guard let ready = state.lun, ready.writable, let disk = ready.bsdName else {
+            return (false, "The new volume's disk did not come back after writing was allowed. Try again in a moment.")
+        }
+        // The disk was announced again and may have a new number: check the one about to be erased.
+        guard diskIsBlank(disk) else {
+            return (false, "Unit \(unit) is not blank. Nothing was erased.")
+        }
+        progress("Formatting…")
+        guard let result = runTool("/usr/sbin/diskutil", ["eraseDisk", fileSystem.rawValue, name, "GPT", "/dev/" + disk]) else {
+            return (false, "Could not run diskutil.")
+        }
+        guard result.status == 0 else {
+            let reason = result.output.split(separator: "\n").last.map(String.init) ?? "unknown error"
+            return (false, "Formatting did not finish: \(reason)" + (userIsAdmin ? "" : " This needs an administrator account."))
+        }
+        return (true, "\(name) is ready and mounted. The Mac can write to it; turn Allow writes off on the Volumes tab to protect it.")
     }
 
     // MARK: Volume management (protocol notes 11.26, docs/05-volume-management.md)
