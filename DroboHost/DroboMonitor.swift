@@ -130,8 +130,9 @@ struct DroboVolumeRecord: Equatable {
     let nextID: Int
 
     /// Decodes the page as the driver publishes it, 4-byte page header included: a count byte
-    /// at offset 4, then 19-byte records. The 8D sends a record for every unit it could have;
-    /// the ones in use are those whose unique ID is not 0, and only those are returned.
+    /// at offset 4, then 19-byte records. The 8D sends a record for every unit it could have:
+    /// a never-used unit has ID 0, a deleted one keeps its ID with size 0. Only records with
+    /// both an ID and a size, the volumes that exist, are returned.
     /// nil when the bytes are not a volume list.
     static func decode(page: [UInt8]) -> [DroboVolumeRecord]? {
         guard page.count >= 5, page[0] == 0x7A else { return nil }
@@ -144,7 +145,7 @@ struct DroboVolumeRecord: Equatable {
                                      formatType: Int(page[r + 13]),
                                      uniqueID: Int(page[r + 14]) << 8 | Int(page[r + 15]),
                                      nextID: Int(page[r + 16]) << 8 | Int(page[r + 17]))
-        }.filter { $0.uniqueID != 0 }
+        }.filter { $0.uniqueID != 0 && $0.bytes != 0 }
     }
 }
 

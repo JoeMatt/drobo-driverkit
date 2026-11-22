@@ -359,10 +359,11 @@ DroboDeleteVolumePayload(uint8_t payload[4], uint16_t uniqueID, uint8_t unit)
 }
 
 // The volume list: management page 0x07 (ESALUNInfo2). After the 4-byte page header comes a
-// count byte, then 19-byte records. The 8D sends a record for every unit it could have (16),
-// used or not, and the count byte says how many are in use; an unused unit has unique ID 0
-// (protocol notes 11.26, "On hardware"). So a record is a volume when its unique ID is not 0,
-// and the count byte is not relied on.
+// count byte, then 19-byte records. The 8D sends a record for every unit it could have (16).
+// A unit that never held a volume has unique ID 0; a unit whose volume was deleted keeps its
+// record and its ID but has size 0 (protocol notes 11.26, "On hardware"). So a record is a
+// volume when both its unique ID and its size are not 0. The count byte counts deleted units
+// too and is not relied on.
 static const uint32_t kDroboVolumePageHeader = 5;
 static const uint32_t kDroboVolumeRecordSize = 19;
 
@@ -389,7 +390,7 @@ DroboVolumePageCount(const uint8_t * page, uint32_t length)
 static inline bool
 DroboVolumeRecordInUse(const DroboVolumeRecord * record)
 {
-    return record->uniqueID != 0;
+    return record->uniqueID != 0 && record->sizeBytes != 0;
 }
 
 static inline bool

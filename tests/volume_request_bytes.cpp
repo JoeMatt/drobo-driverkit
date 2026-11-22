@@ -77,15 +77,19 @@ main()
     Check("delete data", removeData, removeDocumented, 4);
 
     // A volume list as the 8D sends it (header byte 1 reads 04): unit 0, 16 TiB, ID 1; unit 3,
-    // 2 TiB, ID 0x0105; then an unused unit, which has ID 0 and still gets a record.
-    const uint8_t page[5 + 3 * 19] = {
-        0x7A, 0x04, 0x00, 0x3A, 0x02,
+    // 2 TiB, ID 0x0105; an unused unit, which has ID 0 and still gets a record; and a unit
+    // whose volume was deleted, which keeps its ID and has size 0.
+    const uint8_t page[5 + 4 * 19] = {
+        0x7A, 0x04, 0x00, 0x4D, 0x03,
         0x00, 0x11, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x08, 0x00, 0x01, 0x01, 0x06, 0x00,
         0x00, 0x11, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x08, 0x01, 0x05, 0x01, 0x06, 0x00,
         0x00, 0x11, 0x04, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x01, 0x06, 0x00,
+        0x00, 0x11, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x01, 0x04, 0x01, 0x06, 0x00,
     };
     DroboVolumeRecord record;
-    Expect("volume list: records", DroboVolumePageCount(page, sizeof(page)) == 3);
+    Expect("volume list: records", DroboVolumePageCount(page, sizeof(page)) == 4);
+    Expect("volume list: deleted unit", DroboVolumePageRecord(page, sizeof(page), 3, &record) &&
+           !DroboVolumeRecordInUse(&record) && record.unit == 5 && record.uniqueID == 0x0104);
     Expect("volume list: unused unit", DroboVolumePageRecord(page, sizeof(page), 2, &record) &&
            !DroboVolumeRecordInUse(&record) && record.unit == 4);
     Expect("volume list: first", DroboVolumePageRecord(page, sizeof(page), 0, &record) && record.unit == 0 &&
@@ -93,7 +97,7 @@ main()
     Expect("volume list: second", DroboVolumePageRecord(page, sizeof(page), 1, &record) && record.unit == 3 &&
            record.sizeBytes == (2ull << 40) && record.uniqueID == 0x0105 && record.partitionCount == 2);
     Expect("volume list: in use", DroboVolumeRecordInUse(&record));
-    Expect("volume list: past the end", !DroboVolumePageRecord(page, sizeof(page), 3, &record));
+    Expect("volume list: past the end", !DroboVolumePageRecord(page, sizeof(page), 4, &record));
     // A page cut short holds only the records that are whole.
     Expect("volume list: truncated", DroboVolumePageCount(page, 5 + 19 + 4) == 1);
     Expect("volume list: empty", DroboVolumePageCount(page, 5) == 0);

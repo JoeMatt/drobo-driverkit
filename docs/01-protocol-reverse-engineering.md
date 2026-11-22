@@ -1503,9 +1503,47 @@ the header. The driver asked for 15 until v0.30.1; the page's own length field s
 - `tests/volume_request_bytes.cpp` builds all four requests with the driver's own functions
   and compares them with the table above.
 
-**On hardware.** Nothing in this section had been sent to a Drobo when it was written. Results
-are added below as each step is run on the maintainer's 8D (firmware 4.2.3), in the order of
-the test plan in 05-volume-management.md.
+**On hardware** (the maintainer's 8D, firmware 4.2.3, 2026-11-21; its contents had been
+copied off and it had two failed drives and no redundancy throughout). **[obs]**
+
+*Reads, driver v0.31.0:*
+
+- **Page `07` is answered.** Its header is `7A 04 01 31`: byte 1 reads `04` although sub-page
+  `07` was asked for, which is what Dashboard's parser insists on.
+- **The page always carries 16 records**, one per possible unit. A unit that never held a
+  volume has unique ID 0, format type `20` and the maximum size in its size field. The count
+  byte was 6 with five live volumes: it also counts units whose volume was deleted (below).
+- Live volumes had IDs 1000 and 1004 to 1007, and every record gave 1008 as the next ID.
+- **The config page's "maximum LUN size" is in 512-byte blocks, not bytes**: `0x4000000000`
+  (2^38), which as bytes would be 256 GiB while the unit's largest volume was 128 TiB, exactly
+  2^38 blocks **[inf]**. v0.31.0 read it as bytes and would have refused any larger create;
+  fixed in v0.31.1. The 28-byte config page also gave demo mode 0, scale factor 1, read-only
+  mode 0.
+- Refusals: with volumes mounted, a delete and a reset (with a wrong serial) were both turned
+  down before anything was sent.
+
+*Delete, driver v0.31.1, sent from the app by the maintainer (not captured by the driver's
+status, which was lost in the restarts that followed; this is the maintainer's account plus
+the volume list read afterwards):*
+
+- Units 3 (256 GiB, ID 1004) and 1 (2.15 TB, ID 1005) were deleted. The maintainer pressed
+  Delete several times and restarted the app and the Drobo in between, so which attempt took
+  effect is not known.
+- **The delete was not answered while the app waited.** At least one attempt sat "waiting"
+  until the Thunderbolt cable was replugged, after which the Drobo restarted itself. Whether
+  the firmware answers late, never, or was busy with an earlier delete is **[unk]**; it needs
+  a run with the driver's `VolumeSRB` and timing read while it happens.
+- **A deleted unit keeps its record and its unique ID.** After the restart units 1 and 3 read
+  size 0, format type `20`, IDs 1005 and 1004 unchanged, exactly like unit 2 (ID 1003), which
+  therefore was a volume deleted years ago, not a special one-block unit. The DroboPort LUN
+  table still lists such a unit with one block (11.6). So "a volume exists" means ID and size
+  both non-zero; v0.31.1 went by the ID alone and would have offered a deleted unit for
+  deletion again. Fixed in v0.31.2.
+- The capacity page's "used" fell from 7.4 TB to 404 GB.
+- Whether the LUN table changes without a restart was not observed: the Drobo was restarted
+  before the driver's re-read could show it.
+
+Not yet run: create, reset.
 
 ## 12. Open questions that need the hardware
 
