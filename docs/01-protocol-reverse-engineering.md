@@ -1012,7 +1012,12 @@ All four are system operations in the data-out form this driver already uses for
   the volume object whose ID matches, unmounts it first (up to five tries, two seconds apart)
   and sends the delete even if unmounting failed.
 - Where the unique ID is in the status pages this project already reads has not been matched
-  up yet (`ESALUNInfo2Struct`, the object field at `+0x6a`).
+  up yet (`ESALUNInfo2Struct`, the object field at `+0x6a`). (Matched up in 11.26: management
+  page `07`.)
+- **Corrected in 11.26**, which reads these functions again and checks them against the 8D
+  firmware: byte 4 of these three CDBs is zero, not the session's sequence number; the size is
+  in bytes; and Dashboard sends no delete at all when it cannot find the volume (the `FF` above
+  was a misreading).
 - The Drobo's own log records a delete as event 500 and the space coming back as 501.
 
 ### 11.21 The 8D firmware image, first look (2026-11-17)
@@ -1352,6 +1357,156 @@ host-side change makes them work. The SMART-ish data the Drobo does publish with
 most these commands could have added for drive health, and that path already works. Bumping or
 recovering a drive has no host route at all; a physical reseat is the only option.
 
+### 11.26 Volume create, delete and reset: Dashboard and firmware, then the driver (driver v0.31.0, 2026-11-21)
+
+Static analysis of Drobo Dashboard 3.6.1's service (`DDService64d`, x86_64) and of the 8D
+firmware 4.2.3 (the second executable of the `.tdf`, as in 11.22). **[obs]** unless marked.
+What was then sent to a Drobo is at the end, under "On hardware".
+
+**How Dashboard resets ("erases") a Drobo.** The service command `eCmdReset` reaches
+`ESABlockDevice::Reset()` @ `0x10006b4e8`. It calls the device's `formatESA` (vtable slot
+`+0x48`, `ESADevice::_formatESA` @ `0x100074ffc`), which unmounts the volumes of every unit
+(`ESABlockLUN::unmountVolumes`) and then calls the session's `formatESA` (session vtable slot
+`+0x20`, `ESASCSISession::formatESA` @ `0x1000a7e7c`). That is one call:
+`sendSystemOperation(0x02)`, the plain form of 11.14, the same one blink uses.
+
+    EA 10 00 02 <sequence> 00 21 00 01 00        + one zero byte, data-out
+
+`Reset()` then drops the device from the service's device list. There is no second request,
+no challenge and no confirmation on the wire: the confirmation users remember was Dashboard's
+own dialog. The trace string in the firmware names the operation `ESA_SYSOPID_FORMAT_ESA`.
+
+**What the firmware does with operation `0x02`** (`HAManager::systemOperation` @ `0x143958`,
+jump table at `0x1439b4`, case `0x02` @ `0x143eb0` → `HAManager::cleardiskArray()` @
+`0x12d888`):
+
+- reads three settings out of its flash configuration (`demomode`, `scalefactor`,
+  `maxlunsize`), deletes the configuration file (`FlashConfigData::DeleteConfigFile`) and
+  writes those three back. Everything else in the configuration goes: name, options,
+  thresholds **[inf: from the file being deleted]**;
+- if no drives are present it logs "no disks, just clearing flash";
+- otherwise it creates the file `/bd0/FormatOnStart` on its boot device, a marker that makes
+  the next start-up format the disk pack **[inf: from the name]**;
+- turns off the battery-backed RAM (`SystemManager::psramBatteryPowerOff`) and schedules
+  `HAManager::ClearDiskReboot` one second later, which restarts the unit
+  (`SystemManager::Reboot`).
+
+So the request is answered first and the erase happens during the restart that follows. It
+is the same thing the shell command `cleardisk` does (`cleardiskCommandHandler` @ `0x12dbec`).
+Every drive in the unit at that moment is formatted, failed ones included **[inf]**.
+
+**The four requests.** The CDB is built by `ESASystemOperationCDB`'s constructor @
+`0x1000c5838`: byte 2 is `80` for a read, byte 3 the operation, byte 4 an argument of the
+caller's, byte 6 three flags (`0x40`, `0x20`, `0x01`), bytes 7–8 the length.
+
+| What | CDB | Data | Dashboard | Firmware case |
+|---|---|---|---|---|
+| Reset | `EA 10 00 02 <seq> 00 21 00 01 00` | 1 zero byte out | `ESASCSISession::formatESA` @ `0x1000a7e7c` | `0x143eb0` |
+| Next unique volume ID | `EA 10 80 20 00 00 21 00 02 00` | 2 bytes in: u16 BE | `ESASCSISession::getNextUniqueLUNID` @ `0x1000a901a` | `0x145200` |
+| Create a volume | `EA 10 00 12 00 00 21 00 0C 00` | 12 bytes out, below | `ESABlockDevice::CreateLUN` @ `0x10006654e` | `0x144d94` |
+| Delete a volume | `EA 10 00 13 00 00 21 00 04 00` | 4 bytes out, below | `ESABlockDevice::DeleteUniqueLUN` @ `0x100064008` | `0x145594` |
+
+Byte 4 is **zero** for the three volume requests: `CreateLUN` and `DeleteUniqueLUN` build the
+CDB themselves with a zero there, and `getNextUniqueLUNID` passes zero. Only requests that go
+through `sendSystemOperation(unsigned char)`, reset among them, carry the session counter.
+(11.20 said all four carry it; that was wrong.)
+
+*Create, 12 bytes:*
+
+| Offset | Type | Dashboard | Firmware |
+|---|---|---|---|
+| 0 | u64 BE | the request's `Size` | size in **bytes**: it shifts right by 9 and subtracts 1 to get the last block number |
+| 8 | u8 | low byte of the request's `Flags` | bit 0 is handed to `HRManager::createLun` as its last argument and on to `CATLookupTable::createLun`; meaning not decoded **[unk]** |
+| 9 | u8 | always 0 | when not zero, the firmware marks its USB transport inactive after a successful create (the host is made to reconnect **[inf]**) |
+| 10 | u16 BE | the unique volume ID | the new volume's unique ID |
+
+`HRManager::createLun` @ `0x2de6f8` refuses a size above its limit ("Requested LUN too big",
+status 16) and a create beyond the volume count; on success it logs "HRM:createLun: created
+LUN #n" and posts a user event with `LUN_NUMBER` and `SIZE`. The unit number is chosen by the
+firmware, not by the host.
+
+*Where the unique ID comes from.* For most models Dashboard first asks the Drobo (operation
+`0x20`) and uses the answer. The firmware's handler returns a 16-bit counter kept with the
+disk pack's volume table (`CATManager` structure, offset `0x17c`) and adds one to it, so the
+read is not free of side effects: each one uses up an ID. For other models Dashboard counts on
+its own, from the largest "next available ID" it has seen in the volume list. Which of the two
+it does for an 8D depends on a feature bit of the device object (`+0x1e5`, bit 1) that was not
+traced **[unk]**. The 8D's firmware has the `0x20` handler, so this driver asks.
+
+*Delete, 4 bytes:* u16 BE unique volume ID, u8 unit number, u8 which, when not zero, makes the
+firmware mark its USB transport inactive afterwards (Dashboard sends 0). The firmware calls
+`HRManager::deleteLun(unit, uniqueID)` @ `0x2d6c68`. Dashboard looks the unit number up from
+the unique ID, first among its volume objects, then in its cached volume list; if it finds the
+ID in neither **it sends nothing**. Before sending it takes the unit's volumes offline
+(`ESABlockLUN::offlineUnwantedVolumes`) and sends the delete even if that failed.
+
+Resize (operation `0x0F`, 11.20) is still not decoded and not implemented.
+
+**The volume list: management page `07`** (`ESALUNInfo2`; the firmware's
+`HAManager::GetLunInfo2` @ `0x1323f0`). MODE SENSE as for every other page. After the 4-byte
+header comes a count byte at offset 4, then one 19-byte record per volume
+(`ESALUNInfo2Struct::parse` @ `0x10009e11c`, names from its `print`):
+
+| Offset in record | Type | Field |
+|---|---|---|
+| 0 | u16 BE | length of the rest of the record (`0x0011`) |
+| 2 | u8 | LUN ID: the unit number |
+| 3 | u64 BE | total capacity, bytes |
+| 11 | u8 | partition scheme |
+| 12 | u8 | partition count |
+| 13 | u8 | format type |
+| 14 | u16 BE | unique ID |
+| 16 | u16 BE | next available ID (the counter operation `0x20` hands out) |
+| 18 | u8 | flags; bit `0x08` is set from a per-volume flag in lab mode only |
+
+Dashboard's parser accepts this page only when byte 1 of the header reads `04`, although it
+asks for sub-page `07`. What the 8D puts there is under "On hardware".
+
+**The config page `01` in full** (`ESAConfigurationInfo::parse` @ `0x10009bc4c`), 28 bytes with
+the header. The driver asked for 15 until v0.30.1; the page's own length field says `0x18`.
+
+| Offset in page | Type | Field | On the maintainer's 8D |
+|---|---|---|---|
+| 4 | u8 | maximum slot count | 9 |
+| 6 | u8 | maximum LUN count | 16 |
+| 7 | u64 BE | maximum LUN size, bytes | `0x400000000000`, 64 TiB |
+| 16 | u32 BE | demo mode | not read before v0.31.0 |
+| 20 | u32 BE | scale factor | not read before v0.31.0 |
+| 24 | u32 BE | read-only mode | not read before v0.31.0 |
+
+**In the driver (v0.31.0).** Design and safety model are in
+[05-volume-management.md](05-volume-management.md). In short:
+
+- Page `07` is read with the other pages (key `Volumes` under `DroboHealth`), sized from the
+  config page's LUN count. A Drobo that refuses it loses volume management and nothing else.
+- User-client selector 3 takes one volume command: create (size), delete (unit and unique
+  ID) or reset. The driver refuses it unless the caller passes a fixed confirm value **and the
+  Drobo's own serial number**, no block I/O is in flight or queued, and, for create and
+  delete, the volume list was read within the last 15 seconds and agrees with the request
+  (the volume to delete is listed with that unit and ID; there is room for another volume;
+  the size is whole blocks and within the config page's limit). The checks run again at the
+  moment the destructive request goes out, and a request that fails them then is dropped.
+- Create is two requests: `0x20`, then `0x12` with the ID just read. If the ID comes back as
+  one a listed volume already has, the create is not sent. The flags byte and byte 9 are
+  always 0.
+- `DroboStatus` gains `VolumeState` (0 never, 1 running, 2 done, 3 failed), `VolumeCommand`,
+  `VolumeStep` (1 the ID read, 2 the change itself), `VolumeSRB` (`0xFFFFFFFF` no answer in
+  two minutes, `0xFFFFFFFE` dropped by the driver unsent, `0xFFFFFFFD` ID in use),
+  `VolumeSCSIStatus`, `VolumeUnit`, `VolumeUniqueID`, `MaxVolumes`, `MaxVolumeBytes`,
+  `VolumeListFailed`, `LUNRescans`; `CommandFormat` is 6.
+- After a create or delete the Drobo answers, the driver reads the LUN table in BAR1 again
+  every 4 seconds for up to a minute. When it has changed, and no block I/O is in flight, the
+  driver takes the new table and announces its SCSI target again, with writing off for every
+  unit that changed. Whether the 8D changes that table without a restart was not known when
+  this was written (drobo-utils has a status bit `0x4000`, "new volume available after
+  restart").
+- `tests/volume_request_bytes.cpp` builds all four requests with the driver's own functions
+  and compares them with the table above.
+
+**On hardware.** Nothing in this section had been sent to a Drobo when it was written. Results
+are added below as each step is run on the maintainer's 8D (firmware 4.2.3), in the order of
+the test plan in 05-volume-management.md.
+
 ## 12. Open questions that need the hardware
 
 0. ~~What puts the 8D in "lab mode" so the firmware shell accepts commands.~~ Answered in
@@ -1366,6 +1521,9 @@ recovering a drive has no host route at all; a physical reseat is the only optio
 6. ~~32-bit DMA through the Apple silicon DART.~~ Answered in 11.3: it works.
    Original note: The kext shipping an arm64e slice suggests Drobo ran this on
    M1, but that is not proof.
+7. Volume management (11.26): what bit 0 of the create flags byte does; which way Dashboard
+   gets the unique ID for an 8D; whether the LUN table in BAR1 changes without a restart after
+   a create or delete; what a reset does to drives that were already marked failed.
 
 Items 2–3 are answered by a read-only probe: map both BARs, read the `DroboPort` header,
 capabilities and tables, and log them. That needs the host-BAR-ready write first (the only

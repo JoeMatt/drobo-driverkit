@@ -5,7 +5,7 @@ What the original Drobo software did, and where this project stands. Status valu
 on hardware), **unsupported** (implemented, but the hardware or firmware refuses it on a stock
 unit, so it cannot work for users), **partial**, **no**.
 
-Last updated for driver v0.30.1.
+Last updated for driver v0.31.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -45,8 +45,9 @@ Every externally visible function of the kext, from its symbol table.
 
 ## Against Drobo Dashboard
 
-Dashboard itself has **not** been reverse-engineered. The list below is its feature set as
-users knew it, mapped to the management protocol documented by drobo-utils. Features with no
+The list below is Dashboard's feature set as users knew it, mapped to the management protocol
+documented by drobo-utils and, where its service (`DDService64d`) has been disassembled
+(protocol notes 11.9, 11.14 to 11.26), to what Dashboard itself sends. Features with no
 protocol reference are marked as needing that analysis.
 
 | Dashboard feature | Protocol | Here | Status |
@@ -65,12 +66,15 @@ protocol reference are marked as needing that analysis.
 | Shut down / standby | vendor `EA` command `0D` | Shut Down | unverified |
 | Restart | unknown | not implemented | no: needs Dashboard analysis |
 | Volume list, mount, unmount, eject | host side | volumes card | verified (list, eject), unverified (per-volume buttons; privileged helper and administrator prompt for standard accounts) |
-| Create / delete / resize volumes | drobo-utils has `SetLunSize` only | not implemented | no: needs Dashboard analysis |
+| Volume list with each volume's own ID | MODE SENSE `3A/07` (protocol notes 11.26) | read with the other pages since v0.31.0; `drobo volumes`, Volumes tab | unverified |
+| Create a volume | system operations `20` then `12` (11.26) | Volumes → New Volume…, `drobo volume create`; spec in [05-volume-management.md](05-volume-management.md) | unverified |
+| Delete a volume | system operation `13` (11.26) | Volumes → Delete…, `drobo volume delete <unit>` | unverified |
+| Resize volumes | system operation `0F`, payload not decoded (11.20) | not implemented | no |
 | Format a volume | host side | Disk Utility, once writing is on | n/a |
 | Dim lights / LED brightness | unknown | not implemented | no: needs Dashboard analysis |
 | Email alerts | host side | local notifications only | partial |
 | Firmware update | drobo-utils documents it for older units | not implemented, by decision | no |
-| Reset / erase the Drobo | unknown | not implemented, by decision | no |
+| Reset / erase the Drobo | system operation `02` (11.26) | Advanced → Reset Drobo…, `drobo reset`. The earlier decision not to build it was reversed by the maintainer for v0.31.0 | unverified |
 | Diagnostics download | drobo-utils `GetDiagRecord` | not implemented | no |
 | Per-drive error counters and disk pack state (firmware shell: `state error`, `state dpm`) | vendor `EA` operation `0A` (protocol notes 11.22 to 11.25) | removed from the app (driver v0.30.1 shell plumbing kept, inert) | **unsupported**: verified on hardware (driver 0.30.1) that the 8D turns down the command text at once (SRB response 4). Its firmware accepts shell commands only in the VxWorks ED&R lab/debug state, which a deployed unit is not in and which no host-side change can set (11.24, 11.25). Not in Dashboard's UI: a support hook |
 | S.M.A.R.T. attributes (firmware shell: `SmartStatus`) | same | removed from the app | **unsupported**: refused the same way (11.25). The per-drive temperature, error count and life remaining of page `35` are the S.M.A.R.T. data the Drobo does give out, and that path works |

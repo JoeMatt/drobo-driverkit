@@ -32,6 +32,8 @@ public:
     kern_return_t AppCommand(uint32_t command, uint32_t argument, const char * name) LOCALONLY;
     kern_return_t CopyLog(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied) LOCALONLY;
     kern_return_t CopyShell(uint32_t offset, uint8_t * destination, uint32_t capacity, uint32_t * copied) LOCALONLY;
+    kern_return_t VolumeCommand(uint32_t command, uint32_t confirm, uint64_t sizeBytes, uint32_t unit,
+                                uint32_t uniqueID, const char * serial) LOCALONLY;
 
     virtual kern_return_t UserReportHBAHighestLogicalUnitNumber(uint64_t * value) override;
     virtual kern_return_t UserDoesHBASupportSCSIParallelFeature(uint32_t theValue, bool * result) override;
@@ -99,6 +101,7 @@ protected:
     bool HealthSend() LOCALONLY;
     void HealthResponse() LOCALONLY;
     void PublishHealth() LOCALONLY;
+    void RescanLUNs() LOCALONLY;
     uint64_t CopyToTask(const SCSIUserParallelTask * task, const void * bytes, uint64_t length) LOCALONLY;
 };
 

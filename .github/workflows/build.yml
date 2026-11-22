@@ -27,6 +27,12 @@ jobs:
           xcrun clang++ -std=gnu++17 -Wall -Werror -o "$RUNNER_TEMP/shell_request_bytes" tests/shell_request_bytes.cpp
           "$RUNNER_TEMP/shell_request_bytes"
 
+      # The same for the volume and reset requests (protocol notes 11.26) and the volume list decoder.
+      - name: Volume request bytes match the protocol notes
+        run: |
+          xcrun clang++ -std=gnu++17 -Wall -Werror -o "$RUNNER_TEMP/volume_request_bytes" tests/volume_request_bytes.cpp
+          "$RUNNER_TEMP/volume_request_bytes"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

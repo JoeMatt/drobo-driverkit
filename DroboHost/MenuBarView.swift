@@ -180,7 +180,7 @@ struct MenuBarPanel: View {
                 HStack(spacing: 7) {
                     Image(systemName: "internaldrive").font(.system(size: 11, weight: .light))
                         .foregroundStyle(lun.isMounted ? Theme.primary : Theme.tertiary).frame(width: 14)
-                    Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
+                    Text(lun.title)
                         .font(Theme.text(12, .medium)).foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary)
                         .lineLimit(1)
                     if lun.writable { Text("rw").font(Theme.mono(9, .medium)).foregroundStyle(Theme.amber) }

@@ -1,8 +1,9 @@
 import Foundation
 
-/// `drobo`: read-only status from the command line, for shell prompts, tmux/vim status lines,
-/// scripts and dashboards. It reads what the driver publishes (the same source as the app) and
-/// never sends anything to the Drobo.
+/// `drobo`: status from the command line, for shell prompts, tmux/vim status lines, scripts
+/// and dashboards. It reads what the driver publishes (the same source as the app). The only
+/// commands that send anything to the Drobo are `volume create`, `volume delete` and `reset`,
+/// and only with `--yes-really` and the Drobo's serial number (docs/05-volume-management.md).
 ///
 /// Exit status: 0 healthy, 1 warning or rebuilding, 2 needs attention, 3 not connected,
 /// 64 usage error.
@@ -27,6 +28,15 @@ commands
   diagnostics            raw driver state and management pages as JSON, serial and name redacted
   metrics                Prometheus text format, for node_exporter's textfile collector, Telegraf, etc.
 
+commands that change the Drobo (each prints what it would do and stops unless --yes-really is given;
+all refuse while any Drobo volume is mounted)
+  volume create          a new volume; --size <n>TB|<n>GB|max (default max, the largest the Drobo allows)
+  volume delete <unit>   DELETES that volume and everything in it
+  reset                  ERASES every drive in the Drobo and its settings, then the Drobo restarts
+                         --serial <serial>: the Drobo's serial number (`drobo get serial`), as confirmation;
+                         asked for at the prompt when left out
+                         --yes-really: actually send it
+
 options
   --json                 machine-readable output (status, device, drives, volumes, all)
   --short                compact status, e.g. "Drobo ok 34%"
@@ -34,6 +44,7 @@ options
   --demo <healthy|rebuilding>   made-up data, no driver needed
 
 exit status: 0 healthy, 1 warning or rebuilding, 2 needs attention, 3 not connected
+(volume create, volume delete, reset: 0 done, 1 refused or failed, 2 nothing sent because --yes-really was missing)
 """
 
 // MARK: Drive history
@@ -156,7 +167,7 @@ struct State {
     }
 
     func lun(_ text: String) -> DroboLUN? {
-        if let match = luns.first(where: { $0.volumeNames.contains { $0.caseInsensitiveCompare(text) == .orderedSame } }) {
+        if let match = luns.first(where: { ($0.volumeNames + $0.knownNames).contains { $0.caseInsensitiveCompare(text) == .orderedSame } }) {
             return match
         }
         return Int(text).flatMap { id in luns.first { $0.id == id } }
@@ -258,9 +269,11 @@ func drivesText(_ slots: [DroboSlot]) -> String {
 
 func volumesText(_ luns: [DroboLUN]) -> String {
     guard !luns.isEmpty else { return "No volumes reported." }
-    return table([["UNIT", "SIZE", "ACCESS", "DISK", "MOUNTED"]] + luns.map {
-        ["\($0.id)", human($0.bytes), $0.writable ? "read/write" : "read-only", $0.bsdName ?? "-",
-         $0.isMounted ? $0.volumeNames.joined(separator: ", ") : "-"]
+    return table([["UNIT", "SIZE", "ACCESS", "DISK", "ID", "MOUNTED", "NAME"]] + luns.map {
+        let names = $0.isMounted ? $0.volumeNames : $0.knownNames
+        return ["\($0.id)", human($0.bytes), $0.writable ? "read/write" : "read-only", $0.bsdName ?? "-",
+                $0.uniqueID.map { "\($0)" } ?? "-", $0.isMounted ? "yes" : "no",
+                names.isEmpty ? "-" : names.joined(separator: ", ")]
     })
 }
 
@@ -283,7 +296,8 @@ func driveJSON(_ slot: DroboSlot) -> [String: Any] {
 
 func volumeJSON(_ lun: DroboLUN) -> [String: Any] {
     ["unit": lun.id, "bytes": lun.bytes, "writable": lun.writable, "mounted": lun.isMounted,
-     "names": lun.volumeNames, "disk": lun.bsdName ?? NSNull()]
+     "names": lun.volumeNames, "known_names": lun.knownNames,
+     "disk": lun.bsdName ?? NSNull(), "id": lun.uniqueID ?? NSNull()]
 }
 
 func deviceJSON(_ state: State) -> [String: Any] {
@@ -473,6 +487,9 @@ var positional: [String] = []
 var summaryOnly = false
 var problemsOnly = false
 var baySlot: Int?
+var sizeText: String?
+var typedSerial: String?
+var yesReally = false
 
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -498,6 +515,13 @@ while !arguments.isEmpty {
         } else {
             fail("--bay needs a bay: 1-8 or ssd")
         }
+    case "--size":
+        guard !arguments.isEmpty else { fail("--size needs a size, e.g. 16TB, 500GB or max") }
+        sizeText = arguments.removeFirst()
+    case "--serial":
+        guard !arguments.isEmpty else { fail("--serial needs the Drobo's serial number") }
+        typedSerial = arguments.removeFirst()
+    case "--yes-really": yesReally = true
     case "--demo":
         guard !arguments.isEmpty else { fail("--demo needs healthy or rebuilding") }
         demo = arguments.removeFirst()
@@ -512,11 +536,80 @@ while !arguments.isEmpty {
 
 let command = positional.first ?? "status"
 
+/// Runs one command that changes the Drobo: checks, shows what it would do, confirms, sends,
+/// waits for the Drobo's answer. Returns the exit status.
+func runVolume(_ action: DroboVolumeAction, state: State) -> Int32 {
+    func say(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    guard demo == nil else {
+        say("not available with --demo")
+        return 1
+    }
+    let snapshot = state.snapshot
+    if let blocker = DroboMonitor.volumeBlocker(action, snapshot: snapshot, volumes: state.volumes) {
+        say(blocker)
+        return 1
+    }
+    print("\(state.name), serial \(snapshot.serial.trimmingCharacters(in: .whitespaces))")
+    print(action.summary(snapshot, luns: state.luns))
+    guard yesReally else {
+        print("Nothing was sent. Add --yes-really to do it.")
+        return 2
+    }
+    var serial = typedSerial
+    if serial == nil, isatty(STDIN_FILENO) != 0 {
+        print("Type the Drobo's serial number to confirm: ", terminator: "")
+        fflush(stdout)
+        serial = readLine()
+    }
+    guard let serial, DroboMonitor.serialMatches(serial, snapshot: snapshot) else {
+        say("The serial number does not match this Drobo. Nothing was sent.")
+        return 1
+    }
+    if let failure = DroboMonitor.sendVolume(action, snapshot: snapshot) {
+        say(failure)
+        return 1
+    }
+    // The driver has the command; the Drobo gets two minutes to answer it.
+    let deadline = Date().addingTimeInterval(150)
+    while Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.5)
+        let now = DroboMonitor.snapshot()
+        guard now.driverPresent else {
+            if action == .reset {
+                print("The Drobo has disconnected, which is what a reset does: it is erasing its drives and restarting.")
+                return 0
+            }
+            say("The Drobo disconnected before answering.")
+            return 1
+        }
+        if let outcome = DroboMonitor.volumeOutcome(action, snapshot: now) {
+            if outcome.ok { print(outcome.text) } else { say(outcome.text) }
+            return outcome.ok ? 0 : 1
+        }
+    }
+    say("The driver did not report an answer. Look at `drobo volumes` before trying again.")
+    return 1
+}
+
 /// Prints one command's output and returns the exit status.
 func run() -> Int32 {
     let state = State.load(demo: demo)
     let code = state.health.code
     switch command {
+    case "reset":
+        return runVolume(.reset, state: state)
+    case "volume" where positional.count > 1 && positional[1] == "create":
+        let largest = state.snapshot.maxVolumeBytes
+        guard let bytes = DroboVolumeAction.parseSize(sizeText ?? "max", max: largest) else {
+            fail(sizeText == nil ? "the Drobo has not reported its largest volume size yet; give --size"
+                                 : "--size needs a size such as 16TB, 500GB or max")
+        }
+        return runVolume(.create(bytes: bytes), state: state)
+    case "volume" where positional.count > 1 && positional[1] == "delete":
+        guard positional.count > 2, let unit = Int(positional[2]), (0..<256).contains(unit) else {
+            fail("volume delete needs a unit number (see `drobo volumes`)")
+        }
+        return runVolume(.delete(unit: unit), state: state)
     case "status":
         if json { printJSON(deviceJSON(state)) } else { print(statusLine(state, short: short)) }
     case "device":
@@ -651,7 +744,10 @@ func run() -> Int32 {
     return code
 }
 
-if let watch {
+// A command that changes the Drobo runs once, whatever --watch says.
+let changesDrobo = command == "reset" ||
+    (command == "volume" && positional.count > 1 && ["create", "delete"].contains(positional[1]))
+if let watch, !changesDrobo {
     while true {
         print("\u{1B}[2J\u{1B}[H", terminator: "")
         _ = run()

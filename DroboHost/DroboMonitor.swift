@@ -103,8 +103,105 @@ struct DroboLUN: Identifiable {
     /// BSD name of the unit's whole disk, e.g. "disk24"; nil if macOS has no disk for it.
     let bsdName: String?
     let writable: Bool
+    /// The Drobo's own ID for this volume (volume list, page 0x07): what a delete is keyed by.
+    /// nil when the driver has not read the list or the list has no entry for this unit.
+    var uniqueID: Int? = nil
+    /// Names of the volumes macOS finds on this unit's disk, mounted or not (from the disk's
+    /// partitions and APFS containers). Empty for a blank or unreadable unit.
+    var knownNames: [String] = []
 
     var isMounted: Bool { !volumeNames.isEmpty }
+    /// What to call the unit: its mounted volumes, else the volumes known to be on it.
+    var title: String {
+        if isMounted { return volumeNames.joined(separator: ", ") }
+        return knownNames.isEmpty ? "Not mounted" : knownNames.joined(separator: ", ") + " (not mounted)"
+    }
+}
+
+/// One entry of the Drobo's volume list (management page 0x07, protocol notes 11.26).
+struct DroboVolumeRecord: Equatable {
+    let unit: Int
+    let bytes: UInt64
+    let partitionScheme: Int
+    let partitionCount: Int
+    let formatType: Int
+    let uniqueID: Int
+    /// The ID the Drobo would give the next new volume.
+    let nextID: Int
+
+    /// Decodes the page as the driver publishes it, 4-byte page header included: a count byte
+    /// at offset 4, then 19-byte records. The 8D sends a record for every unit it could have;
+    /// the ones in use are those whose unique ID is not 0, and only those are returned.
+    /// nil when the bytes are not a volume list.
+    static func decode(page: [UInt8]) -> [DroboVolumeRecord]? {
+        guard page.count >= 5, page[0] == 0x7A else { return nil }
+        let count = (page.count - 5) / 19
+        return (0..<count).map { index -> DroboVolumeRecord in
+            let r = 5 + index * 19
+            let size = page[(r + 3)..<(r + 11)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            return DroboVolumeRecord(unit: Int(page[r + 2]), bytes: size,
+                                     partitionScheme: Int(page[r + 11]), partitionCount: Int(page[r + 12]),
+                                     formatType: Int(page[r + 13]),
+                                     uniqueID: Int(page[r + 14]) << 8 | Int(page[r + 15]),
+                                     nextID: Int(page[r + 16]) << 8 | Int(page[r + 17]))
+        }.filter { $0.uniqueID != 0 }
+    }
+}
+
+/// A change to the Drobo's volumes. Every one of them goes through `DroboMonitor.runVolume`.
+enum DroboVolumeAction: Equatable {
+    /// A new volume of this many bytes. It is thin: the size is what the Mac sees, not space set aside.
+    case create(bytes: UInt64)
+    /// Deletes the volume on this unit and everything stored in it.
+    case delete(unit: Int)
+    /// Erases every drive in the Drobo and its settings; the Drobo then restarts.
+    case reset
+
+    var label: String {
+        switch self {
+        case .create: return "Create volume"
+        case .delete(let unit): return "Delete volume \(unit)"
+        case .reset: return "Reset"
+        }
+    }
+
+    /// One line saying what the Drobo is asked to do, for the confirmation step.
+    func summary(_ snapshot: DroboSnapshot, luns: [DroboLUN] = []) -> String {
+        switch self {
+        case .create(let bytes):
+            return "Create one new volume of \(DroboVolumeAction.size(bytes)). Nothing existing is changed."
+        case .delete(let unit):
+            let size = snapshot.volumeRecords?.first { $0.unit == unit }.map { " (" + DroboVolumeAction.size($0.bytes) + ")" } ?? ""
+            let names = luns.first { $0.id == unit }?.knownNames ?? []
+            let what = names.isEmpty ? "the volume on unit \(unit)" : "\(names.joined(separator: ", ")), the volume on unit \(unit)"
+            return "Delete \(what)\(size) and everything stored in it. This cannot be undone."
+        case .reset:
+            return "Erase every drive in the Drobo, all \(snapshot.volumeRecords?.count ?? snapshot.lunsPresent) volumes and its settings, then restart it. This cannot be undone."
+        }
+    }
+
+    static func size(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .binary)
+    }
+
+    /// Reads a size such as "16TB", "500 GB", "2tib" or "max". Units are binary (1 TB = 1024 GB),
+    /// which is how the Drobo counts. Rounded down to a whole 512-byte block.
+    static func parseSize(_ text: String, max: UInt64) -> UInt64? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        if trimmed == "max" { return max > 0 ? max : nil }
+        let digits = trimmed.prefix { $0.isNumber || $0 == "." }
+        guard let number = Double(digits), number > 0 else { return nil }
+        let unit = trimmed.dropFirst(digits.count).trimmingCharacters(in: .whitespaces)
+        let scale: Double
+        switch unit {
+        case "tb", "tib", "t": scale = 1_099_511_627_776
+        case "gb", "gib", "g": scale = 1_073_741_824
+        default: return nil
+        }
+        let bytes = number * scale
+        guard bytes < 1.8e19 else { return nil }
+        return UInt64(bytes) / 512 * 512
+    }
 }
 
 /// Commands the driver accepts from the app (must match the driver's enum).
@@ -119,6 +216,13 @@ enum DroboCommand: UInt32 {
     case setDim = 8
     case getDim = 9
     case readLog = 10
+}
+
+/// Volume commands (driver selector 3; must match the driver's enum).
+enum DroboVolumeCommand: UInt32 {
+    case create = 1
+    case delete = 2
+    case reset = 3
 }
 
 /// The driver's own timing for one size class of block request.
@@ -179,6 +283,25 @@ struct DroboSnapshot {
     var eventLogLength = 0
     /// LED dim level, 0 (brightest) to 9, once it has been read from the Drobo.
     var dimLevel: Int?
+
+    // Volume management (driver 0.31.0, protocol notes 11.26).
+    /// The driver can create and delete volumes and reset the Drobo.
+    var volumeManagementAvailable: Bool { commandFormat >= 6 }
+    /// The Drobo's volume list; nil until the driver has read it (or if the Drobo refuses it).
+    var volumeRecords: [DroboVolumeRecord]?
+    var volumeListFailed = false
+    /// How many volumes the Drobo can have, and the largest it allows, from its config page.
+    var maxVolumes = 0
+    var maxVolumeBytes: UInt64 = 0
+    /// 0 never run, 1 running, 2 done, 3 failed.
+    var volumeState = 0
+    /// The Drobo's answer to the volume command run last: 1 is success. 0xFFFFFFFF no answer,
+    /// 0xFFFFFFFE dropped by the driver before sending, 0xFFFFFFFD the new ID was already in use.
+    var volumeResult: UInt32 = 0
+    var volumeSCSIStatus = 0
+    /// 1 when that answer was for the read of the next volume ID, 2 for the change itself.
+    var volumeStep = 0
+    var volumeUniqueID = 0
 
     // From the optional system pages (sub-pages 0x33, 0x37, 0x36, 0x34; protocol notes 11.11).
     // nil or empty unless those pages are on and the Drobo answers them.
@@ -262,6 +385,14 @@ enum DroboMonitor {
             snapshot.eventLogState = Int(number(status["EventLogState"]))
             snapshot.eventLogLength = Int(number(status["EventLogLength"]))
             snapshot.dimLevel = (status["DimLevel"] as? NSNumber)?.intValue
+            snapshot.volumeState = number(status["VolumeState"])
+            snapshot.volumeResult = (status["VolumeSRB"] as? NSNumber)?.uint32Value ?? 0
+            snapshot.volumeSCSIStatus = number(status["VolumeSCSIStatus"])
+            snapshot.volumeStep = number(status["VolumeStep"])
+            snapshot.volumeUniqueID = number(status["VolumeUniqueID"])
+            snapshot.maxVolumes = number(status["MaxVolumes"])
+            snapshot.maxVolumeBytes = (status["MaxVolumeBytes"] as? NSNumber)?.uint64Value ?? 0
+            snapshot.volumeListFailed = status["VolumeListFailed"] as? Bool ?? false
             snapshot.extendedEnabled = status["ExtendedSlots"] as? Bool ?? false
             snapshot.extendedFailed = status["ExtendedSlotsFailed"] as? Bool ?? false
             snapshot.latency = [("4 KB", "4K"), ("64 KB", "64K"), ("256 KB", "256K"), ("512 KB", "512K")].map { label, key in
@@ -336,6 +467,9 @@ enum DroboMonitor {
                 offset += recordSize
             }
             snapshot.slots = slots
+        }
+        if let page = health["Volumes"] as? Data {
+            snapshot.volumeRecords = DroboVolumeRecord.decode(page: [UInt8](page))
         }
         if let page = payload(health["Slots2"]) { applySlots2(page, to: &snapshot) }
         applySystemPages(system: payload(health["System"]), fan: payload(health["Fan"]),
@@ -469,6 +603,30 @@ enum DroboMonitor {
 
     private static func diskNumber(_ bsd: String) -> Int { Int(bsd.dropFirst(4)) ?? Int.max }
 
+    /// Names of the volumes on each Drobo unit, mounted or not, as Disk Arbitration knows
+    /// them. This is what lets a person tell the units apart once everything is ejected.
+    static func volumeNamesOnDisk() -> [Int: [String]] {
+        guard let session = DASessionCreate(kCFAllocatorDefault) else { return [:] }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOMedia"), &iterator) == KERN_SUCCESS else {
+            return [:]
+        }
+        defer { IOObjectRelease(iterator) }
+        // The EFI partition every GUID disk has, and the helper volumes of an APFS system.
+        let hidden: Set<String> = ["EFI", "Preboot", "Recovery", "VM", "Update"]
+        var names: [Int: [String]] = [:]
+        while case let media = IOIteratorNext(iterator), media != 0 {
+            defer { IOObjectRelease(media) }
+            guard let lun = droboLUN(of: media),
+                  let disk = DADiskCreateFromIOMedia(kCFAllocatorDefault, session, media),
+                  let description = DADiskCopyDescription(disk) as? [String: Any],
+                  let name = description[kDADiskDescriptionVolumeNameKey as String] as? String,
+                  !name.isEmpty, !hidden.contains(name) else { continue }
+            if names[lun]?.contains(name) != true { names[lun, default: []].append(name) }
+        }
+        return names.mapValues { $0.sorted() }
+    }
+
     /// How to run diskutil as root for an account that may not do it itself: a verb and
     /// the BSD names to apply it to, returning nil on success. The app installs
     /// `PrivilegedHelper.diskutil` here; the command line tool and the helper leave it nil.
@@ -573,13 +731,16 @@ enum DroboMonitor {
     /// The Drobo's logical units with whatever is mounted from each.
     static func luns(_ snapshot: DroboSnapshot, volumes: [DroboVolume]) -> [DroboLUN] {
         let disks = wholeDisks()
+        let known = volumeNamesOnDisk()
         return snapshot.lunBlocks.enumerated().compactMap { index, blocks in
             guard blocks > 1 else { return nil }
             return DroboLUN(id: index,
                             bytes: blocks * 512,
                             volumeNames: volumes.filter { $0.lun == index }.map(\.name),
                             bsdName: disks[index],
-                            writable: snapshot.writableMask & (1 << UInt32(index)) != 0)
+                            writable: snapshot.writableMask & (1 << UInt32(index)) != 0,
+                            uniqueID: snapshot.volumeRecords?.first { $0.unit == index }?.uniqueID,
+                            knownNames: known[index] ?? [])
         }
     }
 
@@ -609,6 +770,139 @@ enum DroboMonitor {
         case kIOReturnNotPermitted: return "The driver refused: the Drobo's own status does not allow this command on that bay now, or that status is not fresh (it must be newer than 15 seconds, and a minute must pass after another per-bay command). Nothing was sent."
         case kIOReturnNotPrivileged: return "The driver refused: the command was not confirmed."
         default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + ")."
+        }
+    }
+
+    // MARK: Volume management (protocol notes 11.26, docs/05-volume-management.md)
+
+    /// Why a volume action cannot be started now, or nil when it can. Checked by the app and
+    /// the `drobo` command before they ask for confirmation; the driver makes its own checks
+    /// again whatever is decided here.
+    static func volumeBlocker(_ action: DroboVolumeAction, snapshot: DroboSnapshot, volumes: [DroboVolume]) -> String? {
+        guard snapshot.driverPresent, snapshot.ready else { return "The Drobo is not connected or not ready." }
+        guard snapshot.volumeManagementAvailable else {
+            return "Volume management needs driver 0.31.0 or later. Open the app and press Activate on the Advanced tab first."
+        }
+        guard snapshot.healthAvailable else { return "The Drobo is not answering status requests." }
+        guard !snapshot.serial.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return "The driver has not read the Drobo's serial number, which is needed to confirm."
+        }
+        if snapshot.volumeState == 1 { return "Another volume command is still running." }
+        if !volumes.isEmpty {
+            let names = volumes.map(\.name).sorted().joined(separator: ", ")
+            return "Drobo volumes are mounted (\(names)). Eject them first: nothing is sent while a volume is mounted."
+        }
+        if snapshot.inflight != 0 { return "The Drobo's disks are in use. Wait for that to finish." }
+        if action == .reset { return nil }
+        guard let records = snapshot.volumeRecords else {
+            return snapshot.volumeListFailed
+                ? "This Drobo did not answer the request for its volume list, so volumes cannot be managed."
+                : "The Drobo's volume list has not been read yet. Try again in a few seconds."
+        }
+        switch action {
+        case .delete(let unit):
+            guard records.contains(where: { $0.unit == unit }) else { return "The Drobo lists no volume on unit \(unit)." }
+        case .create(let bytes):
+            if snapshot.maxVolumes > 0, records.count >= snapshot.maxVolumes {
+                return "The Drobo already has the most volumes it allows (\(snapshot.maxVolumes))."
+            }
+            if bytes == 0 || bytes % 512 != 0 { return "The size must be a whole number of 512-byte blocks." }
+            if snapshot.maxVolumeBytes > 0, bytes > snapshot.maxVolumeBytes {
+                return "The largest volume this Drobo allows is \(DroboVolumeAction.size(snapshot.maxVolumeBytes))."
+            }
+        case .reset:
+            break
+        }
+        return nil
+    }
+
+    /// Whether what was typed is this Drobo's serial number. Case and surrounding spaces are
+    /// forgiven here; the driver then compares the real serial, which is what gets sent.
+    static func serialMatches(_ typed: String, snapshot: DroboSnapshot) -> Bool {
+        let actual = snapshot.serial.trimmingCharacters(in: .whitespaces)
+        return !actual.isEmpty && typed.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(actual) == .orderedSame
+    }
+
+    /// Sends one volume command to the driver. Returns nil when the driver took it, or why not.
+    /// "Took it" means the request is on its way; `volumeOutcome` says how it ended.
+    static func sendVolume(_ action: DroboVolumeAction, snapshot: DroboSnapshot) -> String? {
+        var command = DroboVolumeCommand.reset
+        var size: UInt64 = 0
+        var unit: UInt32 = 0
+        var uniqueID: UInt32 = 0
+        switch action {
+        case .create(let bytes):
+            command = .create
+            size = bytes
+        case .delete(let number):
+            guard let record = snapshot.volumeRecords?.first(where: { $0.unit == number }) else {
+                return "The Drobo lists no volume on unit \(number)."
+            }
+            command = .delete
+            unit = UInt32(record.unit)
+            uniqueID = UInt32(record.uniqueID)
+        case .reset:
+            break
+        }
+        guard let service = driverService() else { return "The driver is not running." }
+        defer { IOObjectRelease(service) }
+        var connection: io_connect_t = 0
+        let opened = IOServiceOpen(service, mach_task_self_, 0, &connection)
+        guard opened == KERN_SUCCESS else {
+            return "Could not connect to the driver (0x" + String(UInt32(bitPattern: opened), radix: 16) + ")."
+        }
+        defer { IOServiceClose(connection) }
+
+        // Layout must match DroboVolumeCommandInput in the driver:
+        // u32 command, u32 confirm, u64 size, u32 unit, u32 unique ID, char serial[32].
+        var input = [UInt8](repeating: 0, count: 56)
+        withUnsafeBytes(of: command.rawValue.littleEndian) { input.replaceSubrange(0..<4, with: $0) }
+        withUnsafeBytes(of: UInt32(0xD0B0_E4A5).littleEndian) { input.replaceSubrange(4..<8, with: $0) }
+        withUnsafeBytes(of: size.littleEndian) { input.replaceSubrange(8..<16, with: $0) }
+        withUnsafeBytes(of: unit.littleEndian) { input.replaceSubrange(16..<20, with: $0) }
+        withUnsafeBytes(of: uniqueID.littleEndian) { input.replaceSubrange(20..<24, with: $0) }
+        let serial = Array(snapshot.serial.utf8.prefix(32))
+        input.replaceSubrange(24..<(24 + serial.count), with: serial)
+
+        let result = IOConnectCallStructMethod(connection, 3, input, input.count, nil, nil)
+        switch result {
+        case KERN_SUCCESS: return nil
+        case kIOReturnBusy: return "The driver refused: the Drobo's disks are in use or another command is running. Nothing was sent."
+        case kIOReturnNotReady: return "The Drobo is not ready."
+        case kIOReturnNotPermitted: return "The driver refused: its copy of the Drobo's volume list is older than 15 seconds or does not match the request. Nothing was sent. Try again in a few seconds."
+        case kIOReturnNotPrivileged: return "The driver refused: the serial number did not match. Nothing was sent."
+        case kIOReturnBadArgument: return "The driver refused: the size is not one this Drobo allows. Nothing was sent."
+        default: return "The driver refused the command (0x" + String(UInt32(bitPattern: result), radix: 16) + "). Nothing was sent."
+        }
+    }
+
+    /// How the volume command run last ended, as one sentence; nil while it is still running.
+    static func volumeOutcome(_ action: DroboVolumeAction, snapshot: DroboSnapshot) -> (ok: Bool, text: String)? {
+        switch snapshot.volumeState {
+        case 1: return nil
+        case 2:
+            switch action {
+            case .create:
+                return (true, "The Drobo created the volume (its ID is \(snapshot.volumeUniqueID)). It appears as a new disk once the Drobo publishes it; if it does not within a minute, restart the Drobo. Then turn on Allow writes for it and erase it in Disk Utility.")
+            case .delete(let unit):
+                return (true, "The Drobo deleted the volume on unit \(unit).")
+            case .reset:
+                return (true, "The Drobo accepted the reset. It erases its drives and restarts, which takes several minutes.")
+            }
+        default:
+            let step = snapshot.volumeStep == 1 ? "the request for a new volume ID" : "the command"
+            switch snapshot.volumeResult {
+            case 0xFFFF_FFFF:
+                return (false, action == .reset
+                    ? "The Drobo did not answer the reset within two minutes. It may be restarting: check its lights before trying anything else."
+                    : "The Drobo did not answer \(step) within two minutes. Whether it was carried out is not known; look at the volume list before trying again.")
+            case 0xFFFF_FFFE:
+                return (false, "The driver dropped the command before sending it: the Drobo's disks came into use, or its volume list changed. Nothing was sent.")
+            case 0xFFFF_FFFD:
+                return (false, "The Drobo handed out volume ID \(snapshot.volumeUniqueID), which a volume already has. The create was not sent.")
+            default:
+                return (false, "The Drobo refused \(step) (response \(snapshot.volumeResult), SCSI status \(snapshot.volumeSCSIStatus)).")
+            }
         }
     }
 

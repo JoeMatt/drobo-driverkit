@@ -225,6 +225,12 @@ struct PreferencesView: View {
 // MARK: - Model
 
 /// Polls the driver's published state every two seconds and runs the dashboard's actions.
+/// A volume change waiting for confirmation.
+struct VolumeRequest: Identifiable {
+    let id = UUID()
+    let action: DroboVolumeAction
+}
+
 final class DashboardModel: ObservableObject {
     @Published var snapshot = DroboSnapshot()
     @Published var volumes: [DroboVolume] = []
@@ -262,6 +268,10 @@ final class DashboardModel: ObservableObject {
     private var rebuildStart: (date: Date, count: UInt32)?
     private var writableSeeded = false
     private var awaitingCommand: (count: UInt64, name: String)?
+    /// The volume change waiting for the person to confirm it (shown as a sheet), and the one
+    /// sent and waiting for the Drobo's answer.
+    @Published var volumeRequest: VolumeRequest?
+    private var awaitingVolume: DroboVolumeAction?
     private var extendedAttempted = false
 
     /// The app setting behind "Read drive details". The driver forgets it when it restarts.
@@ -388,6 +398,17 @@ final class DashboardModel: ObservableObject {
             awaitingCommand = nil
         }
 
+        if let action = awaitingVolume {
+            if let outcome = DroboMonitor.volumeOutcome(action, snapshot: latest) {
+                message = "\(action.label): \(outcome.text)"
+                awaitingVolume = nil
+            } else if !latest.driverPresent {
+                message = action == .reset ? "Reset: the Drobo has disconnected. It is erasing its drives and restarting."
+                                           : "\(action.label): the Drobo disconnected before answering."
+                awaitingVolume = nil
+            }
+        }
+
         let previous = snapshot
         let previousLUNs = luns
         snapshot = latest
@@ -456,6 +477,43 @@ final class DashboardModel: ObservableObject {
         } else {
             message = "\(label): sent…"
             awaitingCommand = (snapshot.commands + 1, label)
+        }
+    }
+
+    // MARK: Volume management (docs/05-volume-management.md)
+
+    /// First step of creating or deleting a volume or resetting the Drobo: checks that it can
+    /// be done now and, if so, puts up the confirmation sheet. Nothing is sent here.
+    func requestVolume(_ action: DroboVolumeAction) {
+        guard Demo.scenario == nil else {
+            message = "Not available with made-up data."
+            return
+        }
+        refresh()
+        if let blocker = DroboMonitor.volumeBlocker(action, snapshot: snapshot, volumes: volumes) {
+            message = blocker
+            return
+        }
+        volumeRequest = VolumeRequest(action: action)
+    }
+
+    /// Second step, from the sheet, once the serial number has been typed.
+    func confirmVolume(_ action: DroboVolumeAction, typedSerial: String) {
+        volumeRequest = nil
+        let latest = DroboMonitor.snapshot()
+        guard DroboMonitor.serialMatches(typedSerial, snapshot: latest) else {
+            message = "\(action.label): the serial number did not match. Nothing was sent."
+            return
+        }
+        if let blocker = DroboMonitor.volumeBlocker(action, snapshot: latest, volumes: DroboMonitor.volumes()) {
+            message = blocker
+            return
+        }
+        if let failure = DroboMonitor.sendVolume(action, snapshot: latest) {
+            message = "\(action.label): \(failure)"
+        } else {
+            message = "\(action.label): sent…"
+            awaitingVolume = action
         }
     }
 

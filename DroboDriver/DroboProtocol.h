@@ -294,4 +294,122 @@ DroboShellReadCDB(uint8_t cdb[16], uint8_t sequence, bool first)
     cdb[8] = (uint8_t) kDroboShellChunk;
 }
 
+// MARK: Volume management and reset (protocol notes 11.26)
+//
+// The four system operations Drobo Dashboard 3.6.1 uses to create and delete volumes and to
+// reset (erase) the whole unit, byte for byte as its service builds them, and checked against
+// the 8D firmware's own handler for each (HAManager::systemOperation). All four are
+// destructive or lead to something destructive; the driver sends them only through
+// DroboSCSIController::VolumeCommand, which holds the checks. tests/volume_request_bytes.cpp
+// prints these and compares them with the notes.
+
+static const uint8_t kDroboOperationResetPack    = 0x02;    // "format ESA": erase everything, restart
+static const uint8_t kDroboOperationCreateVolume = 0x12;
+static const uint8_t kDroboOperationDeleteVolume = 0x13;
+static const uint8_t kDroboOperationNextVolumeID = 0x20;    // hands out the next unique volume ID
+
+static const uint32_t kDroboCreateVolumeLength = 12;
+static const uint32_t kDroboDeleteVolumeLength = 4;
+static const uint32_t kDroboNextVolumeIDLength = 2;
+
+// A system operation:  EA 10 <80 when it reads data back> <operation> <sequence> 00 21 <length16> 00
+// (protocol notes 11.14). Dashboard sends a counter in byte 4 for the operations that go
+// through its session object (reset among them) and zero for the three volume operations.
+static inline void
+DroboSystemOperationCDB(uint8_t cdb[16], uint8_t operation, uint8_t sequence, uint16_t length, bool dataIn)
+{
+    for (int i = 0; i < 16; i++) {
+        cdb[i] = 0;
+    }
+    cdb[0] = 0xEA;
+    cdb[1] = 0x10;
+    cdb[2] = dataIn ? 0x80 : 0x00;
+    cdb[3] = operation;
+    cdb[4] = sequence;
+    cdb[6] = 0x21;
+    cdb[7] = (uint8_t) (length >> 8);
+    cdb[8] = (uint8_t) length;
+}
+
+// Create: u64 size in bytes (big-endian; the firmware turns it into a last block number),
+// a flags byte (bit 0 is passed on to the firmware's volume table; Dashboard passes its
+// request's Flags value, this driver always sends 0), a byte that makes the firmware drop its
+// USB connection when not zero (always 0), u16 unique volume ID (big-endian).
+static inline void
+DroboCreateVolumePayload(uint8_t payload[12], uint64_t sizeBytes, uint16_t uniqueID)
+{
+    for (int i = 0; i < 8; i++) {
+        payload[i] = (uint8_t) (sizeBytes >> (56 - 8 * i));
+    }
+    payload[8]  = 0;
+    payload[9]  = 0;
+    payload[10] = (uint8_t) (uniqueID >> 8);
+    payload[11] = (uint8_t) uniqueID;
+}
+
+// Delete: u16 unique volume ID (big-endian), the unit number, and the same "drop the USB
+// connection" byte (always 0).
+static inline void
+DroboDeleteVolumePayload(uint8_t payload[4], uint16_t uniqueID, uint8_t unit)
+{
+    payload[0] = (uint8_t) (uniqueID >> 8);
+    payload[1] = (uint8_t) uniqueID;
+    payload[2] = unit;
+    payload[3] = 0;
+}
+
+// The volume list: management page 0x07 (ESALUNInfo2). After the 4-byte page header comes a
+// count byte, then 19-byte records. The 8D sends a record for every unit it could have (16),
+// used or not, and the count byte says how many are in use; an unused unit has unique ID 0
+// (protocol notes 11.26, "On hardware"). So a record is a volume when its unique ID is not 0,
+// and the count byte is not relied on.
+static const uint32_t kDroboVolumePageHeader = 5;
+static const uint32_t kDroboVolumeRecordSize = 19;
+
+struct DroboVolumeRecord {
+    uint8_t  unit;              // +2   the logical unit number
+    uint64_t sizeBytes;         // +3   u64, big-endian
+    uint8_t  partitionScheme;   // +11
+    uint8_t  partitionCount;    // +12
+    uint8_t  formatType;        // +13
+    uint16_t uniqueID;          // +14  u16, big-endian: what delete is keyed by
+    uint16_t nextID;            // +16  u16, big-endian: the next ID the Drobo would hand out
+};
+
+// How many whole records the page holds, in use or not.
+static inline uint32_t
+DroboVolumePageCount(const uint8_t * page, uint32_t length)
+{
+    if (page == nullptr || length < kDroboVolumePageHeader || page[0] != 0x7A) {
+        return 0;
+    }
+    return (length - kDroboVolumePageHeader) / kDroboVolumeRecordSize;
+}
+
+static inline bool
+DroboVolumeRecordInUse(const DroboVolumeRecord * record)
+{
+    return record->uniqueID != 0;
+}
+
+static inline bool
+DroboVolumePageRecord(const uint8_t * page, uint32_t length, uint32_t index, DroboVolumeRecord * record)
+{
+    if (index >= DroboVolumePageCount(page, length)) {
+        return false;
+    }
+    const uint8_t * r = page + kDroboVolumePageHeader + index * kDroboVolumeRecordSize;
+    record->unit = r[2];
+    record->sizeBytes = 0;
+    for (int i = 0; i < 8; i++) {
+        record->sizeBytes = (record->sizeBytes << 8) | r[3 + i];
+    }
+    record->partitionScheme = r[11];
+    record->partitionCount  = r[12];
+    record->formatType      = r[13];
+    record->uniqueID = (uint16_t) ((r[14] << 8) | r[15]);
+    record->nextID   = (uint16_t) ((r[16] << 8) | r[17]);
+    return true;
+}
+
 #endif /* DroboProtocol_h */

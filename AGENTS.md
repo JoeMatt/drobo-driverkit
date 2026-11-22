@@ -11,13 +11,14 @@ work on Apple silicon Macs without a kext. Layout:
 | Path | What |
 |---|---|
 | `DroboDriver/` | The dext. `DroboSCSIController.*` is the SCSI controller; `DroboUserClient.*` is the app's command channel; `DroboProtocol.h` holds every wire structure and constant |
-| `DroboCLI/` | The `drobo` command: read-only status for scripts. Shares `DroboMonitor.swift` with the app |
+| `DroboCLI/` | The `drobo` command: status for scripts, plus `volume create`, `volume delete` and `reset` behind `--yes-really` and the serial number. Shares `DroboMonitor.swift` with the app |
 | `DroboHelper/` | The privileged helper: a root launchd daemon (registered with `SMAppService`) that runs `diskutil` mount/unmount on Drobo disks for standard accounts. Its XPC interface is `DroboHost/HelperProtocol.swift`; the app's side is `DroboHost/PrivilegedHelper.swift`. It runs as root, so keep that interface narrow |
 | `scripts/install.sh` | Download/update, build signed with the user's own Apple team, install. Bash 3.2 (what macOS ships) |
 | `DroboHost/` | SwiftUI host app. `DroboHostApp.swift` is UI, `DroboMonitor.swift` decodes what the driver publishes and sends commands, `AppServices.swift` is updates, login item, notifications |
 | `docs/01-…` | Protocol notes. Sections 1–10 are static analysis of the original kext; section 11 is what was observed on real hardware; section 12 lists open questions |
 | `docs/02-…` | Signing and entitlement paths |
 | `docs/03-coverage.md` | Feature coverage against the original driver and Dashboard, with verification status |
+| `docs/05-volume-management.md` | Spec for volume create, delete and reset: what is sent, the three layers of checks, test plan |
 | `project.yml` | XcodeGen spec. The `.xcodeproj` is generated and not committed |
 
 ## Build and check
@@ -66,6 +67,9 @@ owner pressing Activate. So:
    match (see `ProcessCompletions`).
 4. Destructive Drobo management commands (format, reset, LUN create/delete, firmware update)
    are **out of scope** unless an issue explicitly asks for one and the maintainer agrees.
+   The maintainer asked for three: volume create, volume delete and reset (v0.31.0). They go
+   through `VolumeCommand` only, and its checks (docs/05-volume-management.md) are not to be
+   loosened or routed around. Firmware update, resize and per-drive commands are still out.
 5. Read the device's self-describing interrupt tables and compare against the constants before
    using a doorbell, as bring-up does now. If they differ, disable the feature, do not adapt.
 6. Keep failure modes safe: on a timeout, disable the feature (as health polling and flush

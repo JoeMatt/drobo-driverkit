@@ -27,6 +27,23 @@
 //      `expungeDisk <slot>`. `state error verbose` was sent once (v0.30.0) and the Drobo
 //      answered SRB response 4 with no data; no other entry has been sent (protocol notes
 //      11.24). v0.30.1 sends nothing new: it records which request of a command failed.
+//    - reads management page 0x07, the volume list (v0.31.0), with the other pages: MODE
+//      SENSE(10) page 0x3A sub-page 0x07, read-only, as Drobo Dashboard does. The config page
+//      (0x01) is now asked for at its full length, 28 bytes instead of 15.
+//    - when the app asks, and only then, sends a volume command (v0.31.0, protocol notes
+//      11.26), each a system operation on the passthrough channel built by DroboProtocol.h:
+//        0x20  next unique volume ID, 2 bytes data-in (first step of creating a volume);
+//        0x12  create a volume, 12 bytes data-out (size, flags 0, 0, the ID just read);
+//        0x13  delete a volume, 4 bytes data-out (unique ID, unit number, 0). DESTROYS that
+//              volume's data;
+//        0x02  reset: the Drobo erases its disk pack and settings and restarts. One zero
+//              byte data-out. DESTROYS everything on every drive in the unit.
+//      VolumeCommand refuses all of them unless the caller passes the confirm value and the
+//      Drobo's own serial number, no block I/O is in flight, and (create, delete) the volume
+//      list was read in the last 15 seconds and agrees with the request. The checks are made
+//      again at the moment the destructive request goes out.
+//    - after a volume was created or deleted, reads the LUN table in BAR1 again and, if it
+//      changed, announces the SCSI target again. No new MMIO writes.
 //  What it never does:
 //    - send a write of any kind. WRITE/UNMAP/FORMAT etc. are rejected in the driver with
 //      DATA PROTECT, and MODE SENSE reports the medium as write-protected;
@@ -78,17 +95,21 @@ struct DroboLUN
 
 // Drobo management pages: MODE SENSE(10), page 0x3A, one sub-page each. The formats are those
 // documented by the open-source drobo-utils project; the host app decodes them.
-static const uint32_t kHealthPageCount = 14;
+static const uint32_t kHealthPageCount = 15;
 static const uint32_t kHealthPageMax   = 1024;      // slot page 2: 12 + 9 x 108 = 984
 static const uint8_t  kHealthPages[kHealthPageCount] = {
     0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x30, 0x31,
-    0x35, 0x33, 0x34, 0x36, 0x37
+    0x35, 0x33, 0x34, 0x36, 0x37,
+    0x07
 };
 // The pages from this index on (per-drive details, system info, performance, power supply,
 // fan; layouts in protocol notes 11.9 and 11.11) are not known to work on every model. They are
 // asked for only after the app turns them on. A page the Drobo refuses is given up on its own;
 // if one goes unanswered they are all given up. Either way until the driver restarts.
 static const uint32_t kHealthFirstOptional = 9;
+// The volume list (page 0x07, protocol notes 11.26) sits with the optional pages so that a
+// Drobo that refuses it loses only volume management, but it is read without the app asking.
+static const uint32_t kHealthVolumesIndex  = 14;
 static const uint32_t kLogChunk        = 0x8000;    // what Drobo Dashboard asks for per request
 static const uint32_t kLogMaxChunks    = 64;        // 2 MiB; seven years of log on an 8D is past 500 KiB
 static const uint32_t kLogMax          = kLogChunk * kLogMaxChunks;
@@ -321,6 +342,23 @@ struct DroboSCSIController_IVars
     bool                       shellTruncated;      // output was longer than kShellMax
     uint64_t                   statCommands;
     uint32_t                   lastCommandSRB;
+    // Volume management (protocol notes 11.26). One command at a time, only when the app asks.
+    uint32_t                   healthMaxLUNs;       // from the config page; 0 until it has been read
+    uint64_t                   healthMaxLUNBytes;
+    uint64_t                   volumesReadTime;     // when the volume list was last read (0: not since the last command)
+    bool                       volumeActive;        // the command being sent is a volume command
+    uint32_t                   volumeState;         // 0 never run, 1 running, 2 done, 3 failed
+    uint32_t                   volumeCommand;       // kDroboVolumeCommand... of the command run last
+    uint32_t                   volumeStep;          // 1 reading the next ID, 2 the create/delete/reset itself
+    uint64_t                   volumeSize;
+    uint32_t                   volumeUnit;
+    uint32_t                   volumeUniqueID;
+    uint32_t                   volumeLastSRB;       // 0xFFFFFFFF: no answer; 0xFFFFFFFE: dropped here, not sent
+    uint32_t                   volumeLastSCSI;
+    uint32_t                   volumeLastStep;      // which request that answer was for
+    uint64_t                   lunRescanAt;         // when to read the LUN table again (0: not due)
+    uint32_t                   lunRescansLeft;
+    uint64_t                   statLUNRescans;      // times the table had changed and the disks were re-announced
 
     // Cache flush over the system-control channel. I/O queue only.
     uint32_t                   sysRequestListOffset;
@@ -634,7 +672,19 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     // app refuses to send blink, standby or restart to a driver that does not report this.
     // 3 adds the LED dim level commands (v0.28.0).
     // 4 adds the event log read (v0.29.0).
-    DictSetNumber(status, "CommandFormat", 5);
+    // 6 adds volume management (v0.31.0): selector 3, the volume list under DroboHealth.
+    DictSetNumber(status, "CommandFormat", 6);
+    DictSetNumber(status, "VolumeState", iv->volumeState);
+    DictSetNumber(status, "VolumeCommand", iv->volumeCommand);
+    DictSetNumber(status, "VolumeStep", iv->volumeLastStep);
+    DictSetNumber(status, "VolumeSRB", iv->volumeLastSRB);
+    DictSetNumber(status, "VolumeSCSIStatus", iv->volumeLastSCSI);
+    DictSetNumber(status, "VolumeUnit", iv->volumeUnit);
+    DictSetNumber(status, "VolumeUniqueID", iv->volumeUniqueID);
+    DictSetNumber(status, "MaxVolumes", iv->healthMaxLUNs);
+    DictSetNumber(status, "MaxVolumeBytes", iv->healthMaxLUNBytes);
+    DictSetNumber(status, "LUNRescans", iv->statLUNRescans);
+    status->setObject("VolumeListFailed", (iv->extendedFailedMask & (1u << kHealthVolumesIndex)) ? kOSBooleanTrue : kOSBooleanFalse);
     DictSetNumber(status, "ShellState", iv->shellState);
     DictSetNumber(status, "ShellLength", iv->shellState == 2 ? iv->shellLength : 0);
     DictSetNumber(status, "ShellCommand", iv->shellCommand);
@@ -775,6 +825,32 @@ SignatureValid(DroboSCSIController_IVars * iv)
     char signature[kDroboPortSignatureLength + 1] = {};
     memcpy(signature, words, kDroboPortSignatureLength);
     return strncmp(signature, kDroboPortSignature, kDroboPortSignatureLength) == 0;
+}
+
+// Reads the LUN table the Drobo publishes in BAR1 into `luns` (32 entries).
+static void
+ReadLUNTable(DroboSCSIController_IVars * iv, DroboLUN * luns, bool log)
+{
+    for (uint32_t lun = 0; lun < 32; lun++) {
+        luns[lun].present = false;
+        luns[lun].blockSize = 0;
+        luns[lun].blockCount = 0;
+    }
+    for (uint32_t lun = 0; lun < iv->lunCount; lun++) {
+        const uint32_t entry = iv->lunTableOffset + lun * (uint32_t) sizeof(DroboLUNEntry);
+        const uint32_t present   = Port32(iv, entry + 0);
+        const uint32_t blockSize = Port32(iv, entry + 4);
+        const uint64_t blocks    = (uint64_t) Port32(iv, entry + 8) | ((uint64_t) Port32(iv, entry + 12) << 32);
+        // Only 512-byte LUNs are understood; anything else is not published. The 8D also
+        // presents a one-block LUN with no partition map, which only makes macOS show its
+        // "disk not readable" dialog, so single-block units are hidden too.
+        luns[lun].present    = (present != 0 && blockSize == 512 && blocks > 1);
+        luns[lun].blockSize  = blockSize;
+        luns[lun].blockCount = blocks;
+        if (log && present != 0) {
+            DLog("LUN %u: block size %u, %llu blocks", lun, blockSize, blocks);
+        }
+    }
 }
 
 static bool
@@ -943,21 +1019,7 @@ BringUp(IOService * service, DroboSCSIController_IVars * iv)
     // Announce the host, as the original driver does.
     PortWrite32(iv, iv->capabilitiesOffset + 0x24, 1);
 
-    for (uint32_t lun = 0; lun < iv->lunCount; lun++) {
-        const uint32_t entry = iv->lunTableOffset + lun * (uint32_t) sizeof(DroboLUNEntry);
-        const uint32_t present   = Port32(iv, entry + 0);
-        const uint32_t blockSize = Port32(iv, entry + 4);
-        const uint64_t blocks    = (uint64_t) Port32(iv, entry + 8) | ((uint64_t) Port32(iv, entry + 12) << 32);
-        // Only 512-byte LUNs are understood; anything else is not published. The 8D also
-        // presents a one-block LUN with no partition map, which only makes macOS show its
-        // "disk not readable" dialog, so single-block units are hidden too.
-        iv->luns[lun].present    = (present != 0 && blockSize == 512 && blocks > 1);
-        iv->luns[lun].blockSize  = blockSize;
-        iv->luns[lun].blockCount = blocks;
-        if (present != 0) {
-            DLog("LUN %u: block size %u, %llu blocks", lun, blockSize, blocks);
-        }
-    }
+    ReadLUNTable(iv, iv->luns, true);
 
     // Start from a clean outbound state (the original driver's ClearAndEnableInterrupts, minus
     // the enable: completions are polled in this stage).
@@ -1487,6 +1549,229 @@ DroboSCSIController::CopyLog(uint32_t offset, uint8_t * destination, uint32_t ca
     return kIOReturnSuccess;
 }
 
+// MARK: Volume management (protocol notes 11.26)
+
+enum : uint32_t {
+    kDroboVolumeCommandCreate = 1,      // sizeBytes
+    kDroboVolumeCommandDelete = 2,      // unit and uniqueID, both as the volume list gives them
+    kDroboVolumeCommandReset  = 3,      // erases the whole Drobo
+};
+// Says the caller went through its own confirmation step. Not a secret: the second factor is
+// the Drobo's serial number, which the person has to type and which is compared here.
+static const uint32_t kVolumeConfirm   = 0xD0B0E4A5;
+static const uint32_t kVolumeFreshMS   = 15000;     // how old the volume list may be
+static const uint32_t kVolumeTimeoutMS = 120000;    // how long the Drobo gets to answer
+static const uint32_t kVolumeRescanMS  = 4000;      // LUN table re-read: first after this long, then this often
+static const uint32_t kVolumeRescans   = 15;        // and at most this many times
+
+static bool
+SameSerial(const char * typed, const char * actual)
+{
+    size_t typedLength = strnlen(typed, 32);
+    size_t actualLength = strnlen(actual, 32);
+    while (typedLength > 0 && (typed[typedLength - 1] == ' ')) {
+        typedLength--;
+    }
+    while (actualLength > 0 && (actual[actualLength - 1] == ' ')) {
+        actualLength--;
+    }
+    return actualLength != 0 && typedLength == actualLength && memcmp(typed, actual, actualLength) == 0;
+}
+
+// Whether a volume command may go out now, judged from what the Drobo itself last reported.
+// Called when the app asks and again at the moment the destructive request is sent.
+//   - Nothing while block I/O is in flight or queued: a mounted volume in use.
+//   - Create and delete need a volume list read in the last 15 seconds and not used by an
+//     earlier command.
+//   - Delete: the list must hold a volume with exactly this unit number and unique ID.
+//   - Create: the Drobo must have room for another volume, and the size must be a whole
+//     number of 512-byte blocks no larger than the largest volume the Drobo says it allows.
+static kern_return_t
+VolumePermitted(const DroboSCSIController_IVars * iv, uint32_t command, uint64_t sizeBytes, uint32_t unit, uint32_t uniqueID)
+{
+    if (iv->dead || iv->asleep) {
+        return kIOReturnNotReady;
+    }
+    if (iv->inflight != 0 || iv->pendingCount != 0) {
+        return kIOReturnBusy;
+    }
+    if (command == kDroboVolumeCommandReset) {
+        return kIOReturnSuccess;
+    }
+    const uint64_t now = mach_absolute_time();
+    if (iv->volumesReadTime == 0 || now - iv->volumesReadTime > (uint64_t) kVolumeFreshMS * iv->ticksPerMillisecond) {
+        return kIOReturnNotPermitted;
+    }
+    const uint8_t * page = iv->healthData[kHealthVolumesIndex];
+    const uint32_t  length = iv->healthLength[kHealthVolumesIndex];
+    const uint32_t  count = DroboVolumePageCount(page, length);
+    uint32_t inUse = 0;
+    bool listed = false;
+    for (uint32_t i = 0; i < count; i++) {
+        DroboVolumeRecord record;
+        if (DroboVolumePageRecord(page, length, i, &record) && DroboVolumeRecordInUse(&record)) {
+            inUse++;
+            if (record.unit == unit && record.uniqueID == uniqueID) {
+                listed = true;
+            }
+        }
+    }
+    if (command == kDroboVolumeCommandDelete) {
+        return (listed && uniqueID != 0) ? kIOReturnSuccess : kIOReturnNotPermitted;
+    }
+    if (length < kDroboVolumePageHeader || iv->healthMaxLUNs == 0 || inUse >= iv->healthMaxLUNs) {
+        return kIOReturnNotPermitted;
+    }
+    if (sizeBytes == 0 || (sizeBytes & 511) != 0 || (iv->healthMaxLUNBytes != 0 && sizeBytes > iv->healthMaxLUNBytes)) {
+        return kIOReturnBadArgument;
+    }
+    return kIOReturnSuccess;
+}
+
+// First step of creating a volume: ask the Drobo for the unique ID the volume will get.
+//   EA 10 80 20 00 00 21 00 02 00, two bytes data-in.
+static void
+PrepareVolumeNextID(DroboSCSIController_IVars * iv)
+{
+    DroboSystemOperationCDB(iv->commandCDB, kDroboOperationNextVolumeID, 0, (uint16_t) kDroboNextVolumeIDLength, true);
+    bzero(iv->commandData, sizeof(iv->commandData));
+    iv->commandDataOut   = false;
+    iv->commandLength    = kDroboNextVolumeIDLength;
+    iv->commandOperation = kDroboOperationNextVolumeID;
+    iv->volumeStep       = 1;
+}
+
+// The request that changes the Drobo: create, delete or reset.
+static void
+PrepareVolumeFinal(DroboSCSIController_IVars * iv)
+{
+    bzero(iv->commandData, sizeof(iv->commandData));
+    switch (iv->volumeCommand) {
+        case kDroboVolumeCommandCreate:
+            DroboSystemOperationCDB(iv->commandCDB, kDroboOperationCreateVolume, 0, (uint16_t) kDroboCreateVolumeLength, false);
+            DroboCreateVolumePayload(iv->commandData, iv->volumeSize, (uint16_t) iv->volumeUniqueID);
+            iv->commandLength = kDroboCreateVolumeLength;
+            break;
+        case kDroboVolumeCommandDelete:
+            DroboSystemOperationCDB(iv->commandCDB, kDroboOperationDeleteVolume, 0, (uint16_t) kDroboDeleteVolumeLength, false);
+            DroboDeleteVolumePayload(iv->commandData, (uint16_t) iv->volumeUniqueID, (uint8_t) iv->volumeUnit);
+            iv->commandLength = kDroboDeleteVolumeLength;
+            break;
+        default:
+            // Reset goes out exactly like blink, standby and restart: the session counter in
+            // byte 4 and one zero byte of data.
+            DroboSystemOperationCDB(iv->commandCDB, kDroboOperationResetPack, ++iv->commandSequence, 1, false);
+            iv->commandLength = 1;
+            break;
+    }
+    iv->commandDataOut   = true;
+    iv->commandOperation = iv->commandCDB[3];
+    iv->volumeStep       = 2;
+}
+
+kern_return_t
+DroboSCSIController::VolumeCommand(uint32_t command, uint32_t confirm, uint64_t sizeBytes, uint32_t unit,
+                                   uint32_t uniqueID, const char * serial)
+{
+    if (ivars == nullptr || ivars->probeQueue == nullptr || ivars->stopping || !ivars->ready) {
+        return kIOReturnNotReady;
+    }
+    char typed[33] = {};
+    if (serial != nullptr) {
+        strlcpy(typed, serial, sizeof(typed));
+    }
+    const char * typedPointer = typed;
+    __block kern_return_t result = kIOReturnSuccess;
+
+    ivars->probeQueue->DispatchSync(^{
+        DroboSCSIController_IVars * iv = ivars;
+        if (command != kDroboVolumeCommandCreate && command != kDroboVolumeCommandDelete &&
+            command != kDroboVolumeCommandReset) {
+            result = kIOReturnUnsupported;
+            return;
+        }
+        if (confirm != kVolumeConfirm || !SameSerial(typedPointer, iv->serial)) {
+            result = kIOReturnNotPrivileged;
+            return;
+        }
+        if (unit > 0xFF || uniqueID > 0xFFFF) {
+            result = kIOReturnBadArgument;
+            return;
+        }
+        if (iv->commandPending || iv->commandInflight || !iv->healthAvailable || iv->logState == 1 ||
+            iv->shellState == 1 || iv->volumeState == 1) {
+            result = kIOReturnBusy;
+            return;
+        }
+        result = VolumePermitted(iv, command, sizeBytes, unit, uniqueID);
+        if (result != kIOReturnSuccess) {
+            return;
+        }
+        iv->volumeCommand  = command;
+        iv->volumeSize     = command == kDroboVolumeCommandCreate ? sizeBytes : 0;
+        iv->volumeUnit     = command == kDroboVolumeCommandDelete ? unit : 0;
+        iv->volumeUniqueID = command == kDroboVolumeCommandDelete ? uniqueID : 0;
+        iv->volumeState    = 1;
+        iv->volumeLastSRB  = 0;
+        iv->volumeLastSCSI = 0;
+        iv->volumeLastStep = 0;
+        iv->volumeActive   = true;
+        if (command == kDroboVolumeCommandCreate) {
+            PrepareVolumeNextID(iv);
+        } else {
+            PrepareVolumeFinal(iv);
+        }
+        iv->commandPending = true;
+        PublishStatus(this, iv);
+        HealthSend();                               // goes now if the channel is idle
+    });
+    return result;
+}
+
+// After a volume was created or deleted: reads the Drobo's LUN table again and, when it has
+// changed and no block I/O is in flight, takes it over and announces the disks again, as
+// turning writing on does. A new volume is never writable until the app says so.
+void
+DroboSCSIController::RescanLUNs()
+{
+    DroboSCSIController_IVars * iv = ivars;
+    const uint64_t later = mach_absolute_time() + (uint64_t) kVolumeRescanMS * iv->ticksPerMillisecond;
+    if (!iv->ready || iv->dead || iv->asleep || iv->stopping) {
+        iv->lunRescanAt = 0;
+        return;
+    }
+    DroboLUN fresh[32];
+    ReadLUNTable(iv, fresh, false);
+    uint32_t changed = 0;
+    for (uint32_t lun = 0; lun < 32; lun++) {
+        if (fresh[lun].present != iv->luns[lun].present ||
+            (fresh[lun].present && fresh[lun].blockCount != iv->luns[lun].blockCount)) {
+            changed |= 1u << lun;
+        }
+    }
+    if (changed == 0) {
+        iv->lunRescanAt = (iv->lunRescansLeft != 0 && --iv->lunRescansLeft != 0) ? later : 0;
+        return;
+    }
+    if (iv->inflight != 0 || iv->pendingCount != 0 || iv->targetQueue == nullptr || iv->targetCallInFlight) {
+        iv->lunRescanAt = later;                    // not while the disks are in use
+        return;
+    }
+    memcpy(iv->luns, fresh, sizeof(iv->luns));
+    iv->writableMask &= ~changed;
+    iv->lunRescanAt = 0;
+    iv->statLUNRescans++;
+    PublishStatus(this, iv);
+    iv->targetQueue->DispatchAsync(^{
+        ivars->targetCallInFlight = true;
+        UserDestroyTargetForID(0);
+        OSDictionary * target = OSDictionary::withCapacity(1);
+        ivars->createTargetResult = (uint32_t) UserCreateTargetForID(0, target);
+        OSSafeReleaseNULL(target);
+        ivars->targetCallInFlight = false;
+    });
+}
+
 kern_return_t
 DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char * name)
 {
@@ -1539,7 +1824,9 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
                 if (!iv->extendedEnabled) {
                     // Forget what was read, so stale data is not published.
                     for (uint32_t i = kHealthFirstOptional; i < kHealthPageCount; i++) {
-                        iv->healthLength[i] = 0;
+                        if (i != kHealthVolumesIndex) {
+                            iv->healthLength[i] = 0;
+                        }
                     }
                     PublishHealth();
                 }
@@ -1548,7 +1835,7 @@ DroboSCSIController::AppCommand(uint32_t command, uint32_t argument, const char 
             }
             case kDroboAppCommandReadLog: {
                 if (iv->commandPending || iv->commandInflight || !iv->healthAvailable || iv->logState == 1 ||
-                    iv->shellState == 1) {
+                    iv->shellState == 1 || iv->volumeState == 1) {
                     result = kIOReturnBusy;
                     break;
                 }
@@ -2401,7 +2688,8 @@ static uint32_t
 HealthPageLength(DroboSCSIController_IVars * iv, uint8_t page)
 {
     switch (page) {
-        case 0x01: return 4 + 11;                               // config
+        case 0x01: return 4 + 24;                               // config: slots, max LUNs, max LUN size, modes
+        case 0x07: return kDroboVolumePageHeader + kDroboVolumeRecordSize * iv->healthMaxLUNs;  // volume list
         case 0x02: return 4 + 32;                               // capacity
         case 0x03: return 4 + 1 + 72 * iv->healthSlotCount;     // slot info
         case 0x05: return 4 + 38;                               // settings (name, clock)
@@ -2429,7 +2717,8 @@ DroboSCSIController::PublishHealth()
     }
     static const char * const kKeys[kHealthPageCount] = {
         "Config", "Capacity", "Slots", "Settings", "Protocol", "Firmware", "Status", "Options", "Options2",
-        "Slots2", "System", "Performance", "Power", "Fan"
+        "Slots2", "System", "Performance", "Power", "Fan",
+        "Volumes"
     };
     for (uint32_t i = 0; i < kHealthPageCount; i++) {
         if (iv->healthLength[i] != 0) {
@@ -2459,8 +2748,14 @@ DroboSCSIController::PublishHealth()
 static void
 SkipOptionalHealthPage(DroboSCSIController_IVars * iv)
 {
-    while (iv->healthPage >= kHealthFirstOptional && iv->healthPage < kHealthPageCount &&
-           (!iv->extendedEnabled || (iv->extendedFailedMask & (1u << iv->healthPage)) != 0)) {
+    while (iv->healthPage >= kHealthFirstOptional && iv->healthPage < kHealthPageCount) {
+        const bool failed = (iv->extendedFailedMask & (1u << iv->healthPage)) != 0;
+        // The volume list is read whether or not the app asked for the optional pages, once
+        // the config page has said how many volumes the Drobo can have.
+        const bool wanted = iv->healthPage == kHealthVolumesIndex ? iv->healthMaxLUNs != 0 : iv->extendedEnabled;
+        if (wanted && !failed) {
+            break;
+        }
         iv->healthPage++;
     }
 }
@@ -2487,6 +2782,16 @@ DroboSCSIController::HealthSend()
         iv->commandPending = false;
         iv->commandOperation = 0;
         iv->shellState = 3;
+        PublishStatus(this, iv);
+        return false;
+    }
+    if (isCommand && iv->volumeActive && (iv->dead || !iv->healthAvailable)) {
+        // The same for a volume command.
+        iv->commandPending = false;
+        iv->commandOperation = 0;
+        iv->volumeActive = false;
+        iv->volumeState = 3;
+        iv->volumeLastSRB = 0xFFFFFFFE;
         PublishStatus(this, iv);
         return false;
     }
@@ -2526,6 +2831,23 @@ DroboSCSIController::HealthSend()
         iv->slotsReadTime = 0;
         iv->statusReadTime = 0;
         iv->shellSettleUntil = mach_absolute_time() + (uint64_t) kShellSettleMS * iv->ticksPerMillisecond;
+    }
+
+    if (isCommand && iv->volumeActive && iv->volumeStep == 2) {
+        // The request that changes the Drobo is checked again at the moment it goes out: it
+        // may have waited here, and a volume may have come into use meanwhile. If it is no
+        // longer allowed it is dropped, never sent late.
+        if (VolumePermitted(iv, iv->volumeCommand, iv->volumeSize, iv->volumeUnit, iv->volumeUniqueID) != kIOReturnSuccess) {
+            iv->commandPending = false;
+            iv->commandOperation = 0;
+            iv->volumeActive = false;
+            iv->volumeState = 3;
+            iv->volumeLastStep = 2;
+            iv->volumeLastSRB = 0xFFFFFFFE;         // refused here, nothing sent
+            PublishStatus(this, iv);
+            return false;
+        }
+        iv->volumesReadTime = 0;                    // used up: the next command needs a new list
     }
 
     const uint8_t  page   = isCommand ? 0 : kHealthPages[iv->healthPage];
@@ -2704,6 +3026,53 @@ DroboSCSIController::HealthResponse()
         HealthSend();
         return;
     }
+    if (iv->commandInflight && iv->volumeActive) {
+        // A volume command: the answer to the next-ID read, or to the create, delete or reset.
+        bool ok = scsiStatus == 0 &&
+                  (srbResponse == kDroboSRBResponseSuccess || srbResponse == kDroboSRBResponseShort);
+        bool more = false;
+        iv->volumeLastSRB  = srbResponse;
+        iv->volumeLastSCSI = scsiStatus;
+        iv->volumeLastStep = iv->volumeStep;
+        iv->commandInflight = false;
+        iv->tmInflight = false;
+        if (ok && iv->volumeStep == 1) {
+            // The ID the Drobo handed out must not be one a listed volume already has.
+            const uint16_t fresh = BE16(iv->requestVA + kHealthDataOffset);
+            const uint8_t * page = iv->healthData[kHealthVolumesIndex];
+            const uint32_t  length = iv->healthLength[kHealthVolumesIndex];
+            DroboVolumeRecord record;
+            for (uint32_t i = 0; DroboVolumePageRecord(page, length, i, &record); i++) {
+                if (fresh == 0 || record.uniqueID == fresh) {     // 0 marks an unused unit
+                    ok = false;
+                    iv->volumeLastSRB = 0xFFFFFFFD; // the ID is in use: the create is not sent
+                }
+            }
+            iv->volumeUniqueID = fresh;
+            if (ok) {
+                PrepareVolumeFinal(iv);
+                more = true;
+            }
+        }
+        if (more) {
+            iv->commandPending = true;              // goes out now, or from the timer if the channel is busy
+        } else {
+            const bool done = ok && iv->volumeStep == 2;
+            iv->commandOperation = 0;
+            iv->volumeActive = false;
+            iv->volumeState = done ? 2 : 3;
+            iv->lastCommandSRB = srbResponse;
+            iv->statCommands++;
+            if (done && iv->volumeCommand != kDroboVolumeCommandReset) {
+                // The Drobo's LUN table should change now; look until it has.
+                iv->lunRescansLeft = kVolumeRescans;
+                iv->lunRescanAt = mach_absolute_time() + (uint64_t) kVolumeRescanMS * iv->ticksPerMillisecond;
+            }
+            PublishStatus(this, iv);
+        }
+        HealthSend();
+        return;
+    }
     if (iv->commandInflight) {
         // Answer to an app command (blink, standby, rename): record it and carry on polling.
         if (iv->commandOperation == 0x21 && scsiStatus == 0 &&
@@ -2741,6 +3110,8 @@ DroboSCSIController::HealthResponse()
             iv->slotsReadTime = mach_absolute_time();
         } else if (index == 6) {
             iv->statusReadTime = mach_absolute_time();
+        } else if (index == kHealthVolumesIndex) {
+            iv->volumesReadTime = mach_absolute_time();
         }
         // The config page gives the real slot count for the slot-info page.
         if (kHealthPages[index] == 0x01 && length >= 5) {
@@ -2749,12 +3120,23 @@ DroboSCSIController::HealthResponse()
                 iv->healthSlotCount = slots;
             }
         }
+        // And how many volumes there can be and how large: byte 6, then a u64 counted in
+        // 512-byte blocks (the 8D reports 16 and 2^38 blocks, 128 TiB, the size of its largest
+        // existing volume; protocol notes 11.26). The volume list is sized from the first.
+        if (kHealthPages[index] == 0x01 && length >= 15) {
+            const uint8_t most = iv->healthData[index][6];
+            const uint64_t blocks = BE64(iv->healthData[index] + 7);
+            iv->healthMaxLUNs = (most >= 1 && most <= 32) ? most : 0;
+            iv->healthMaxLUNBytes = blocks > (UINT64_MAX >> 9) ? 0 : blocks << 9;
+        }
     } else {
         iv->healthErrors++;
         if (index == 2) {
             iv->slotsReadTime = 0;                  // the old copy no longer vouches for a per-bay command
         } else if (index == 6) {
             iv->statusReadTime = 0;
+        } else if (index == kHealthVolumesIndex) {
+            iv->volumesReadTime = 0;
         }
         if (index >= kHealthFirstOptional) {
             // The Drobo refused this optional page: stop asking for it, keep everything else.
@@ -2784,7 +3166,11 @@ IMPL(DroboSCSIController, HandleHealthTimer)
     // A health query that never came back disables health polling; block I/O is unaffected.
     // A shell command gets longer: the Drobo answers a read only when the command has run.
     const bool shellRun = iv->commandInflight && iv->commandOperation == 0x0A;
-    const uint64_t patience = shellRun ? kShellTimeoutMS : 10000;
+    const bool volumeRun = iv->commandInflight && iv->volumeActive;
+    const uint64_t patience = shellRun ? kShellTimeoutMS : volumeRun ? kVolumeTimeoutMS : 10000;
+    if (iv->lunRescanAt != 0 && mach_absolute_time() >= iv->lunRescanAt) {
+        RescanLUNs();
+    }
     if (iv->tmInflight && mach_absolute_time() - iv->tmSubmitTime > patience * iv->ticksPerMillisecond) {
         const bool optional = !iv->commandInflight && iv->healthPage >= kHealthFirstOptional &&
                               iv->healthPage < kHealthPageCount;
@@ -2798,6 +3184,16 @@ IMPL(DroboSCSIController, HandleHealthTimer)
             iv->commandOperation = 0;
             iv->logState = 3;
             iv->logLastSRB = 0xFFFFFFFF;
+            iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
+            PublishStatus(this, iv);
+        } else if (volumeRun) {
+            // A volume command went unanswered (a reset may end this way: the Drobo restarts).
+            // Whether it was carried out is not known; nothing is sent again.
+            iv->commandOperation = 0;
+            iv->volumeActive = false;
+            iv->volumeState = 3;
+            iv->volumeLastStep = iv->volumeStep;
+            iv->volumeLastSRB = 0xFFFFFFFF;
             iv->healthHoldUntil = mach_absolute_time() + (uint64_t) kLogHoldMS * iv->ticksPerMillisecond;
             PublishStatus(this, iv);
         } else if (shellRun) {

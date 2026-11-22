@@ -99,6 +99,11 @@ struct ContentView: View {
             Text("All Drobo volumes are ejected first, then the Drobo is asked to restart. It takes several minutes to come back. This needs driver 0.27.0 or later and has not been verified on hardware yet. If the Drobo is rebuilding, leave it running.")
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
+        .sheet(item: $dashboard.volumeRequest) { request in
+            VolumeConfirmSheet(request: request, snapshot: dashboard.snapshot, luns: dashboard.luns,
+                               cancel: { dashboard.volumeRequest = nil },
+                               confirm: { action, serial in dashboard.confirmVolume(action, typedSerial: serial) })
+        }
         .confirmationDialog("Change which volumes can be written?", isPresented: $confirmWritable) {
             Button("Eject All and Apply") { dashboard.applyWritable() }
             Button("Cancel", role: .cancel) { dashboard.refresh() }
@@ -361,7 +366,7 @@ struct ContentView: View {
                                 .font(.system(size: 12, weight: .light))
                                 .foregroundStyle(lun.isMounted ? Theme.primary : Theme.tertiary)
                                 .frame(width: 16)
-                            Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
+                            Text(lun.title)
                                 .font(Theme.text(12.5, .medium))
                                 .foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary).lineLimit(1)
                             if lun.writable { Text("read/write").font(Theme.text(10.5)).foregroundStyle(Theme.amber).lineLimit(1) }
@@ -544,7 +549,7 @@ struct ContentView: View {
                             .foregroundStyle(lun.isMounted ? Theme.primary : Theme.tertiary)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(lun.isMounted ? lun.volumeNames.joined(separator: ", ") : "Not mounted")
+                            Text(lun.title)
                                 .font(Theme.text(13.5, .medium))
                                 .foregroundStyle(lun.isMounted ? Theme.primary : Theme.secondary).lineLimit(1)
                             Text("Unit \(lun.id) · " + DashboardModel.bytes(lun.bytes)
@@ -574,6 +579,14 @@ struct ContentView: View {
                         Button(lun.isMounted ? "Unmount" : "Mount") { dashboard.setMounted(!lun.isMounted, lun: lun) }
                             .buttonStyle(PillButtonStyle(compact: true))
                             .disabled(lun.bsdName == nil || dashboard.busy)
+                        if lun.uniqueID != nil {
+                            Button("Delete…") { dashboard.requestVolume(.delete(unit: lun.id)) }
+                                .buttonStyle(PillButtonStyle(kind: .danger, icon: "trash", compact: true))
+                                .disabled(dashboard.busy || !dashboard.volumes.isEmpty)
+                                .help(dashboard.volumes.isEmpty
+                                      ? "Deletes this volume and everything in it. Asks for the Drobo's serial number first."
+                                      : "Eject every Drobo volume first.")
+                        }
                         Toggle("Allow writes", isOn: Binding(
                             get: { dashboard.pendingWritable.contains(lun.id) },
                             set: { on in
@@ -592,6 +605,15 @@ struct ContentView: View {
                     Button("Eject All") { dashboard.ejectAll() }
                         .buttonStyle(PillButtonStyle(icon: "eject"))
                         .disabled(dashboard.volumes.isEmpty)
+                    if dashboard.snapshot.volumeManagementAvailable {
+                        Button("New Volume…") {
+                            dashboard.requestVolume(.create(bytes: dashboard.snapshot.maxVolumeBytes))
+                        }
+                        .buttonStyle(PillButtonStyle(icon: "plus"))
+                        .disabled(!dashboard.volumes.isEmpty || dashboard.snapshot.maxVolumeBytes == 0)
+                        .help(dashboard.volumes.isEmpty ? "Adds a volume to the Drobo. Existing volumes are not changed."
+                                                        : "Eject every Drobo volume first.")
+                    }
                     if dashboard.writableChanged {
                         Button("Apply Write Access…") { confirmWritable = true }
                             .buttonStyle(PillButtonStyle(kind: .primary, icon: "arrow.up.right"))
@@ -715,6 +737,11 @@ struct ContentView: View {
                     .buttonStyle(PillButtonStyle(icon: "arrow.clockwise")).disabled(unavailable)
                 Button("Shut Down…") { confirmShutdown = true }
                     .buttonStyle(PillButtonStyle(kind: .danger, icon: "power")).disabled(unavailable)
+                if dashboard.snapshot.volumeManagementAvailable {
+                    Button("Reset Drobo…") { dashboard.requestVolume(.reset) }
+                        .buttonStyle(PillButtonStyle(kind: .danger, icon: "exclamationmark.triangle")).disabled(unavailable)
+                        .help("Erases every drive in the Drobo and its settings. Asks for the Drobo's serial number first.")
+                }
             }
             if !dashboard.message.isEmpty {
                 Text(dashboard.message).font(Theme.text(12)).foregroundStyle(Theme.secondary)
@@ -921,5 +948,90 @@ struct ContentView: View {
         .foregroundStyle(Theme.tertiary)
         .tint(Theme.secondary)
         .padding(.horizontal, 6)
+    }
+}
+
+// MARK: Volume management confirmation
+
+/// The one place a volume is created or deleted or the Drobo reset from the app: says what
+/// will happen and keeps the button off until the Drobo's serial number has been typed.
+struct VolumeConfirmSheet: View {
+    let request: VolumeRequest
+    let snapshot: DroboSnapshot
+    let luns: [DroboLUN]
+    let cancel: () -> Void
+    let confirm: (DroboVolumeAction, String) -> Void
+
+    @State private var typed = ""
+    @State private var sizeText = ""
+
+    private var isCreate: Bool {
+        if case .create = request.action { return true }
+        return false
+    }
+
+    /// The action as it will be sent: for a new volume, with the size from the field.
+    private var action: DroboVolumeAction? {
+        guard isCreate else { return request.action }
+        return DroboVolumeAction.parseSize(sizeText, max: snapshot.maxVolumeBytes).map { .create(bytes: $0) }
+    }
+
+    private var sizeProblem: String? {
+        guard isCreate else { return nil }
+        guard let action, case .create(let bytes) = action else { return "Give a size such as 16TB, 500GB or max." }
+        if snapshot.maxVolumeBytes > 0, bytes > snapshot.maxVolumeBytes {
+            return "The largest volume this Drobo allows is \(DroboVolumeAction.size(snapshot.maxVolumeBytes))."
+        }
+        return nil
+    }
+
+    private var serial: String { snapshot.serial.trimmingCharacters(in: .whitespaces) }
+    private var destructive: Bool { !isCreate }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Eyebrow(text: isCreate ? "New volume" : (request.action == .reset ? "Reset the Drobo" : "Delete a volume"))
+            if isCreate {
+                HStack(spacing: 10) {
+                    Text("Size").font(Theme.text(13))
+                    TextField("max", text: $sizeText).textFieldStyle(.roundedBorder).frame(width: 120)
+                    ForEach(["2TB", "16TB", "max"], id: \.self) { preset in
+                        Button(preset) { sizeText = preset }.buttonStyle(PillButtonStyle(compact: true))
+                    }
+                }
+                Text("The size is what the Mac sees, not space set aside: the Drobo stores only what is written, so a volume can be larger than the drives installed now.")
+                    .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let action {
+                Label(action.summary(snapshot, luns: luns), systemImage: destructive ? "exclamationmark.triangle.fill" : "plus.circle")
+                    .foregroundStyle(destructive ? Theme.amber : Theme.primary)
+                    .font(Theme.text(13)).fixedSize(horizontal: false, vertical: true)
+            }
+            if let sizeProblem {
+                Text(sizeProblem).font(Theme.text(12)).foregroundStyle(Theme.amber)
+            }
+            if request.action == .reset {
+                Text("Failed drives left in their bays are erased with the rest. A reset does not repair a drive.")
+                    .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            Text("Type this Drobo's serial number (\(serial)) to confirm.")
+                .font(Theme.text(12)).foregroundStyle(Theme.secondary)
+            TextField("Serial number", text: $typed).textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { cancel() }.buttonStyle(PillButtonStyle())
+                Button(isCreate ? "Create Volume" : (request.action == .reset ? "Erase Everything" : "Delete Volume")) {
+                    if let action { confirm(action, typed) }
+                }
+                .buttonStyle(PillButtonStyle(kind: destructive ? .danger : .primary))
+                .disabled(action == nil || sizeProblem != nil || !DroboMonitor.serialMatches(typed, snapshot: snapshot))
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .background(Backdrop().ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .onAppear { sizeText = "max" }
     }
 }

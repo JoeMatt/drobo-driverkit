@@ -5,12 +5,12 @@ Open work, written so each item can become one issue and one pull request. Label
 Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
 [03-coverage.md](03-coverage.md).
 
-1. **Reverse-engineer Drobo Dashboard 3.6.1** [protocol]. It has not been analysed; the app's
-   features come from the kext and drobo-utils. Find how Dashboard issues SCSI commands, list
-   every CDB and MODE page it sends with payload layouts, and add that as a new section of the
-   protocol notes. This decides coverage of restart, LED brightness, volume
-   create/delete/resize, SSD cache management, alert thresholds and diagnostics. Documentation
-   only: no destructive commands in the driver.
+1. **Finish the Drobo Dashboard 3.6.1 analysis** [protocol]. Its service has been read for the
+   page map, system operations, the event log, drive calls, and volume create, delete and
+   reset (protocol notes 11.9, 11.14 to 11.20, 11.26). Still not decoded: resize (operation
+   `0F`), the alert-threshold setter, the diagnostics download, and bit 0 of the create flags
+   byte. Documentation first; nothing destructive goes into the driver without the maintainer
+   asking for it, as happened for item 18.
 2. **Unit tests for the management page decoders** [app, good first issue]. `DroboMonitor.swift`
    has no tests. Add a test target with fixture bytes per page (protocol notes 11.5 gives real
    headers and layouts; a diagnostics file from the maintainer gives whole pages) and run it in `build.yml`.
@@ -77,3 +77,8 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
     one that is rebuilding. The app side (84 event names and severities) is straightforward.
 17. **Drive history, next steps** [app]. Recorded only while the app runs. Still open: per-bay
     detail view, export, and using the Drobo's own log (item 16) to fill the gaps.
+18. **Verify volume management** [driver, app, needs hardware]. Create, delete and reset are in
+    since v0.31.0 ([05-volume-management.md](05-volume-management.md), protocol notes 11.26)
+    and follow that page's test plan: only on a Drobo whose contents are expendable. Open
+    after that: whether the LUN table changes without a restart, and what the Drobo presents
+    straight after a reset.

@@ -20,6 +20,17 @@ struct DroboAppCommandInput
     char     name[32];
 };
 
+// Selector 3 input: a volume command (protocol notes 11.26). Must match the host app.
+struct DroboVolumeCommandInput
+{
+    uint32_t command;       // 1 create, 2 delete, 3 reset
+    uint32_t confirm;
+    uint64_t sizeBytes;     // create
+    uint32_t unit;          // delete
+    uint32_t uniqueID;      // delete
+    char     serial[32];    // the Drobo's serial number, as the person typed it
+};
+
 struct DroboUserClient_IVars
 {
     DroboSCSIController * controller;
@@ -101,6 +112,19 @@ DroboUserClient::ExternalMethod(uint64_t selector,
         }
         IOSafeDeleteNULL(slice, uint8_t, 4096);
         return result;
+    }
+    if (selector == 3) {
+        if (arguments == nullptr || arguments->structureInput == nullptr ||
+            arguments->structureInput->getLength() < sizeof(DroboVolumeCommandInput) ||
+            ivars == nullptr || ivars->controller == nullptr) {
+            return kIOReturnBadArgument;
+        }
+        DroboVolumeCommandInput volume;
+        memcpy(&volume, arguments->structureInput->getBytesNoCopy(), sizeof(volume));
+        char serial[33] = {};
+        memcpy(serial, volume.serial, sizeof(volume.serial));
+        return ivars->controller->VolumeCommand(volume.command, volume.confirm, volume.sizeBytes, volume.unit,
+                                                volume.uniqueID, serial);
     }
     if (selector != 0 || arguments == nullptr || arguments->structureInput == nullptr ||
         arguments->structureInput->getLength() < sizeof(DroboAppCommandInput) ||

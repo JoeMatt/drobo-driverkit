@@ -32,7 +32,9 @@ for the direct-attached Thunderbolt units.
   warning when the enclosure runs well above its usual reading (and per-drive and fan warnings
   on models that report those; the 8D reports neither), and an optional hourly check of the
   Drobo's own log for new warnings such as a drive overheating.
-- **`drobo`**, a read-only command for scripts, status lines and Prometheus-style monitoring.
+- **`drobo`**, a command for scripts, status lines and Prometheus-style monitoring. It only
+  reads, except for `volume create`, `volume delete` and `reset`, which need `--yes-really`
+  and the Drobo's serial number.
 
 | Drives | Menu bar (hold Option for more) |
 |---|---|
@@ -55,7 +57,8 @@ Screenshots use the app's built-in demo data (`-demo healthy`).
 | Blink lights | **Works** (v0.27.1 and later) |
 | Restart, shut down, LED brightness | In the app, using the command format Drobo's own software sends. Not yet verified on hardware |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
-| Creating/deleting Drobo volumes, firmware updates, reset | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
+| Creating and deleting Drobo volumes, resetting (erasing) the Drobo | In the app (Volumes, Advanced) and as `drobo volume create`, `drobo volume delete`, `drobo reset` since 0.31.0. **Not yet verified on hardware.** Each asks for the Drobo's serial number and refuses while a Drobo volume is mounted. See [docs/05-volume-management.md](docs/05-volume-management.md) |
+| Firmware updates, resizing a volume | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |
 | USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` cannot show them: that needs a second driver, which is not started |
 | Intel Macs | Not supported; use Drobo's original driver there |
@@ -69,9 +72,11 @@ see what state the unit is in while you do.
 
 ## Command line
 
-The app includes `drobo`, a read-only status command for shell prompts, tmux or vim status
-lines, scripts and dashboards. It reads what the driver publishes and never sends anything to
-the Drobo.
+The app includes `drobo`, a status command for shell prompts, tmux or vim status
+lines, scripts and dashboards. It reads what the driver publishes and sends nothing to the
+Drobo, with three exceptions that need `--yes-really` and the Drobo's serial number:
+`drobo volume create`, `drobo volume delete <unit>` and `drobo reset` (which erases every
+drive in the unit). Without `--yes-really` each prints what it would do and stops.
 
 Install it from the app: **Install Command Line Tool…** in the app menu, the menu bar item or
 Settings. That links `/usr/local/bin/drobo` to the copy inside the app and asks for an

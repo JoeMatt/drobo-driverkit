@@ -1,8 +1,8 @@
 //
 //  DroboUserClient.iig
 //
-//  The host app's connection to the driver. One external method (selector 0) carrying a
-//  small command structure; see DroboUserClient.cpp.
+//  The host app's connection to the driver. Selector 0 carries a small command structure,
+//  1 and 2 copy out text read from the Drobo, 3 is a volume command; see DroboUserClient.cpp.
 //
 
 #ifndef DroboUserClient_h
