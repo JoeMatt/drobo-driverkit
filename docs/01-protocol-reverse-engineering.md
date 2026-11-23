@@ -1440,7 +1440,7 @@ the unique ID, first among its volume objects, then in its cached volume list; i
 ID in neither **it sends nothing**. Before sending it takes the unit's volumes offline
 (`ESABlockLUN::offlineUnwantedVolumes`) and sends the delete even if that failed.
 
-Resize (operation `0x0F`, 11.20) is still not decoded and not implemented.
+Operation `0x0F` ("resize") is decoded in 11.27: it is a reset with a new volume size.
 
 **The volume list: management page `07`** (`ESALUNInfo2`; the firmware's
 `HAManager::GetLunInfo2` @ `0x1323f0`). MODE SENSE as for every other page. After the 4-byte
@@ -1599,6 +1599,47 @@ back afterwards; the driver's own record of the two requests was lost in the res
   pack; backlog item 3 asks for more than this.
 
 All three operations have now been run on the 8D.
+
+### 11.27 "Resize" is a reset with a new volume size (driver v0.32.0, 2026-11-23)
+
+Static analysis of Dashboard 3.6.1's service and the 8D firmware 4.2.3, as in 11.26.
+**[obs]** unless marked. **Not yet sent to a Drobo.**
+
+11.20 listed operation `0x0F` as "resize, meaning not decoded". It does not resize a volume.
+
+- **Dashboard** (`ESASCSISession::resizeLUNS(unsigned int)` @ `0x1000a7f78`): system operation
+  `0x0F`, four bytes data-out, one u32 big-endian, through the session's ordinary sender, so
+  byte 4 carries the session counter:
+
+      EA 10 00 0F <sequence> 00 21 00 04 00        + u32 BE size
+
+  Its only caller is `ESABlockDevice::ResizePartitionFormat` @ `0x10006b7a2`, the "change
+  volume size" half of Dashboard's format dialog. Its trace lines say what it is: "RESIZING
+  LUN SIZE. EXPECT DROBO RESTART", "OLD LUN SIZE: %d TB, OLD NUMBER OF LUNS", "NEW LUN SIZE:
+  %d TB". It unmounts every volume, sends the request, forgets all its volume objects, waits
+  for the Drobo to come back with the new units, then partitions and formats them.
+- **Firmware** (case `0x0F` @ `0x1445b0`, trace name `ESA_SYSOPID_RESIZE_LUNS`): the value is
+  a size in **TiB**. It is compared with the flash setting `maxlunsize` ("max LUN size in TiB
+  system will export to host") and with the size the disk pack has now:
+  - both already equal it: "resize LUNs from … TiB to … TiB ignored because no change was
+    required!", nothing happens;
+  - the pack is already that size but the flash setting is not: the setting is updated, "no
+    reboot needed as diskpack correct";
+  - otherwise: "Saving DDR enabled state over the reformat cleardisk", then "resizing LUNs
+    from … TiB to … TiB and rebooting!". That is the erase of 11.26 with a new size written
+    first **[inf: from the messages; the calls behind them were not followed]**.
+- So there is no way to grow or shrink a volume and keep its contents on this firmware, and
+  none is needed: volumes are thin, and more can be created. What Dashboard's users knew as
+  "volume size" is the size of the volume the Drobo makes for itself after an erase.
+- The sizes Dashboard's own menu holds are 1, 2, 4, 8, 16, 32, 64, 96 and 128 TB. The 8D in
+  11.26 came back from a plain reset with a 128 TiB volume, so its setting was 128.
+
+**In the driver (v0.32.0).** Volume command 4, "reset with a new volume size": the same
+checks as a reset (confirm value, the Drobo's serial number, no block I/O), and the size must
+be a whole number of TiB up to 128. The app's Reset sheet has a "Volume size afterwards"
+choice and the command is `drobo reset --volume-size 16TB`; both refuse a size equal to the
+current one (which the firmware would ignore) and send a plain reset instead when the size is
+left alone. `CommandFormat` is 7. `tests/volume_request_bytes.cpp` checks the bytes.
 
 ## 12. Open questions that need the hardware
 

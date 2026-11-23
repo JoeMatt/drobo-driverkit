@@ -304,6 +304,7 @@ DroboShellReadCDB(uint8_t cdb[16], uint8_t sequence, bool first)
 // prints these and compares them with the notes.
 
 static const uint8_t kDroboOperationResetPack    = 0x02;    // "format ESA": erase everything, restart
+static const uint8_t kDroboOperationVolumeSize   = 0x0F;    // "resize LUNs": set the volume size; a change erases everything
 static const uint8_t kDroboOperationCreateVolume = 0x12;
 static const uint8_t kDroboOperationDeleteVolume = 0x13;
 static const uint8_t kDroboOperationNextVolumeID = 0x20;    // hands out the next unique volume ID
@@ -311,6 +312,20 @@ static const uint8_t kDroboOperationNextVolumeID = 0x20;    // hands out the nex
 static const uint32_t kDroboCreateVolumeLength = 12;
 static const uint32_t kDroboDeleteVolumeLength = 4;
 static const uint32_t kDroboNextVolumeIDLength = 2;
+static const uint32_t kDroboVolumeSizeLength   = 4;
+static const uint32_t kDroboVolumeSizeMaxTiB   = 128;       // the largest size Dashboard's own menu offers
+
+// Volume size: u32, big-endian, in TiB. This is the Drobo-wide size of the volume it makes
+// for itself. When it differs from the disk pack's, the firmware erases the pack and
+// restarts, exactly as for a reset (protocol notes 11.27).
+static inline void
+DroboVolumeSizePayload(uint8_t payload[4], uint32_t tib)
+{
+    payload[0] = (uint8_t) (tib >> 24);
+    payload[1] = (uint8_t) (tib >> 16);
+    payload[2] = (uint8_t) (tib >> 8);
+    payload[3] = (uint8_t) tib;
+}
 
 // A system operation:  EA 10 <80 when it reads data back> <operation> <sequence> 00 21 <length16> 00
 // (protocol notes 11.14). Dashboard sends a counter in byte 4 for the operations that go

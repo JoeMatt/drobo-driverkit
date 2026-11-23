@@ -58,7 +58,8 @@ Screenshots use the app's built-in demo data (`-demo healthy`).
 | Restart, shut down, LED brightness | In the app, using the command format Drobo's own software sends. Not yet verified on hardware |
 | Dual disk redundancy and spin-down settings, cache flush on eject, sleep/wake | Implemented, not yet verified on hardware |
 | Creating and deleting Drobo volumes, resetting (erasing) the Drobo | In the app (Volumes, Advanced) and as `drobo volume create`, `drobo volume delete`, `drobo reset` since 0.31.0, with `Format…` / `drobo volume format` for the new, blank volume. Verified on an 8D. Each of the three asks for the Drobo's serial number and refuses while a Drobo volume is mounted. See [docs/05-volume-management.md](docs/05-volume-management.md) |
-| Firmware updates, resizing a volume | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
+| Changing the volume size | `Reset Drobo…` → Volume size afterwards, or `drobo reset --volume-size 16TB` (0.32.0, not yet verified on hardware). On a Drobo this erases everything: there is no resizing a volume in place |
+| Firmware updates | Not supported. Erasing or reformatting an existing volume works from Disk Utility once writing is on |
 | Other Thunderbolt Drobos (5D, 5D3, Mini) | **Untested, probably fine.** The driver now attaches to them; see [Other models](#other-models) |
 | USB Drobos | No driver needed: macOS mounts them itself. The app and `drobo` cannot show them: that needs a second driver, which is not started |
 | Intel Macs | Not supported; use Drobo's original driver there |

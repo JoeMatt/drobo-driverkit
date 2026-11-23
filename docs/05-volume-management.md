@@ -25,7 +25,13 @@ that too (`Format…`, `drobo volume format`): they allow writing to the unit an
 format a unit macOS finds nothing on; erasing a volume that has contents stays Disk Utility's
 job.
 
-Not built: resize (operation `0x0F` is not decoded) and renaming a volume.
+**There is no resize.** What Drobo's software called resizing sets the size of the volume
+the Drobo makes for itself and erases everything to apply it (protocol notes 11.27). It is
+offered as an option of Reset: "Volume size afterwards" in the sheet, `--volume-size` on the
+command. Volumes are thin, so to get more room on a Drobo that has data on it, create another
+volume instead.
+
+Not built: renaming a volume (rename the file system on it from Finder).
 
 ## Safety model
 
@@ -84,7 +90,7 @@ drobo volumes                                   # now with the Drobo's ID for ea
 drobo volume create [--size 16TB|500GB|max] [--serial <serial>] [--yes-really]
 drobo volume format <unit> --name <name> [--fs apfs|hfs] [--yes-really]
 drobo volume delete <unit> [--serial <serial>] [--yes-really]
-drobo reset [--serial <serial>] [--yes-really]
+drobo reset [--volume-size 16TB] [--serial <serial>] [--yes-really]
 ```
 
 Exit status: 0 done, 1 refused or failed, 2 nothing sent because `--yes-really` was missing.
@@ -131,5 +137,7 @@ notes 11.26. Stop at the first step that does not behave as described.
    empty or freshly formatted pack. **Done on the 8D with v0.31.1.**
 5. `drobo volume create`. Expect response 1 and a new unit, at once or after a restart.
    **Done on the 8D with v0.31.2 from the app**; the unit appeared after a restart.
+7. `drobo reset --volume-size 16TB` (v0.32.0). Expect what a reset does, and one 16 TiB volume
+   afterwards. **Not run yet.**
 6. `drobo volume format <unit> --name …`, copy a file, eject, remount, compare. **Done on the
    8D with v0.31.3**: 256 MB, matching checksums.

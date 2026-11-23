@@ -1,0 +1,85 @@
+name: Release page
+
+# Pushing a tag vX.Y.Z publishes a GitHub release for it: the notes from
+# docs/releases/X.Y.Z.md (or generated from the commits when there is no such file) and the
+# source archives GitHub attaches itself. It does not build a download. A notarized app that
+# other Macs will load needs Apple's distribution grants; when those exist, the manual
+# "Release (Developer ID, notarized draft)" workflow builds the DMG, and its files can be
+# added to the release this workflow made.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-page-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish release notes
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the project version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "MARKETING_VERSION: \"$version\"" project.yml || {
+            echo "Tag $GITHUB_REF_NAME does not match MARKETING_VERSION in project.yml" >&2
+            exit 1
+          }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # The same checks as the Build workflow: a release is never cut from a tree that fails them.
+      - name: Request bytes match the protocol notes
+        run: |
+          for test in shell_request_bytes volume_request_bytes; do
+            xcrun clang++ -std=gnu++17 -Wall -Werror -o "$RUNNER_TEMP/$test" "tests/$test.cpp"
+            "$RUNNER_TEMP/$test"
+          done
+
+      - name: Compile (unsigned)
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project DroboDriverKit.xcodeproj -scheme DroboHost \
+            -configuration Release -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Write the release notes
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          if [ -f "docs/releases/$VERSION.md" ]; then
+            cat "docs/releases/$VERSION.md" > "$notes"
+          else
+            : > "$notes"
+          fi
+          cat >> "$notes" <<'NOTES'
+
+          ## Installing
+
+          There is no ready-made download yet. Apple has to grant the driver's distribution
+          entitlements before a notarized copy will load on other Macs, so for now you build it
+          once, signed with your own Apple Developer account:
+
+              curl -fsSL https://raw.githubusercontent.com/JoeMatt/drobo-driverkit/master/scripts/install.sh | bash
+
+          The same command updates an existing install. Requirements and the step-by-step guide
+          are in the [README](https://github.com/JoeMatt/drobo-driverkit#install-step-by-step).
+          Apple silicon, macOS 14 or later, Drobo 8D.
+          NOTES
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "DroboDriverKit $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          elif [ -f "docs/releases/$VERSION.md" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "DroboDriverKit $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "DroboDriverKit $VERSION" --generate-notes --notes-file "$RUNNER_TEMP/notes.md"
+          fi

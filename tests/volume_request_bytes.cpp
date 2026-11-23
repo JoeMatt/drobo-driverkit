@@ -51,6 +51,15 @@ main()
     const uint8_t reset[10] = { 0xEA, 0x10, 0x00, 0x02, 0x07, 0x00, 0x21, 0x00, 0x01, 0x00 };
     Check("reset CDB", cdb, reset, 10);
 
+    // Reset with a new volume size: EA 10 00 0F <sequence> 00 21 00 04 00, the size in TiB out.
+    DroboSystemOperationCDB(cdb, kDroboOperationVolumeSize, 0x08, (uint16_t) kDroboVolumeSizeLength, false);
+    const uint8_t resize[10] = { 0xEA, 0x10, 0x00, 0x0F, 0x08, 0x00, 0x21, 0x00, 0x04, 0x00 };
+    Check("volume size CDB", cdb, resize, 10);
+    uint8_t sizeData[4];
+    DroboVolumeSizePayload(sizeData, 16);
+    const uint8_t sizeDocumented[4] = { 0x00, 0x00, 0x00, 0x10 };
+    Check("volume size data", sizeData, sizeDocumented, 4);
+
     // Next unique volume ID: EA 10 80 20 00 00 21 00 02 00, two bytes in.
     DroboSystemOperationCDB(cdb, kDroboOperationNextVolumeID, 0, (uint16_t) kDroboNextVolumeIDLength, true);
     const uint8_t nextID[10] = { 0xEA, 0x10, 0x80, 0x20, 0x00, 0x00, 0x21, 0x00, 0x02, 0x00 };

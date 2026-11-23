@@ -200,6 +200,7 @@
       <a href="#status">Status</a>
       <a href="#app">The app</a>
       <a href="#install">Install</a>
+      <a href="https://github.com/JoeMatt/drobo-driverkit/releases">Releases</a>
       <a href="#contribute">Contribute</a>
     </div>
     <a class="cta" href="https://github.com/JoeMatt/drobo-driverkit">GitHub</a>
@@ -225,6 +226,8 @@
           <a class="btn solid" href="https://github.com/JoeMatt/drobo-driverkit">View the source
             <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.5 11.5l7-7M5.5 4.5h6v6"/></svg></span></a>
           <a class="btn ghost" href="https://github.com/JoeMatt/drobo-driverkit#install-step-by-step">Install guide
+            <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></span></a>
+          <a class="btn ghost" href="https://github.com/JoeMatt/drobo-driverkit/releases/latest">Release notes
             <span class="well"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></span></a>
         </div>
         <p class="fine reveal" style="--d:.32s">Open source under the MIT license. Not affiliated with Drobo, Inc. Screenshots show the app's built-in demo data.</p>
@@ -269,13 +272,13 @@
         <div class="shell reveal" style="--d:.16s"><div class="core">
           <span class="state no"><i></i>Not supported</span>
           <h3>Out of scope</h3>
-          <p>Firmware updates and resizing a volume. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
+          <p>Firmware updates. Resizing a volume in place does not exist on a Drobo: its own software erased the unit to change the size, and so does the option on Reset here. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
         </div></div>
         <div class="shell wide reveal"><div class="core">
-          <span class="state ok"><i></i>New in 0.31 · verified on an 8D</span>
+          <span class="state ok"><i></i>New in 0.32 · verified on an 8D</span>
           <h3>Create and delete volumes, reset the Drobo</h3>
           <p class="pull">Drobo Dashboard no longer runs on a current Mac, so until now there was no way to wipe an 8D and start again. There is now, in the app and as <span class="mono">drobo volume create</span>, <span class="mono">drobo volume delete</span> and <span class="mono">drobo reset</span>.</p>
-          <p>The commands were read out of Drobo Dashboard and checked against the 8D's own firmware. All three are verified on a real 8D: the reset took about four minutes and the unit came back empty, healthy and with one blank volume, and a new volume was created, formatted from the app's own Format step and written to with matching checksums. Each one asks you to type the Drobo's serial number, refuses while a Drobo volume is mounted, and the driver checks the request against the Drobo's own volume list before anything is sent. Delete and reset destroy data for good.</p>
+          <p>The commands were read out of Drobo Dashboard and checked against the 8D's own firmware. All three are verified on a real 8D: the reset took about four minutes and the unit came back empty, healthy and with one blank volume, and a new volume was created, formatted from the app's own Format step and written to with matching checksums. Reset can also bring the Drobo back with a different volume size; that option is new and not yet run on hardware. What changed in each version is in the <a href="https://github.com/JoeMatt/drobo-driverkit/releases">release notes</a>. Each one asks you to type the Drobo's serial number, refuses while a Drobo volume is mounted, and the driver checks the request against the Drobo's own volume list before anything is sent. Delete and reset destroy data for good.</p>
         </div></div>
       </div>
     </div>
@@ -367,7 +370,7 @@
           <p>The app's decoders have no tests. Add a test target with fixture bytes per page and run it in CI.</p>
           <div class="tags"><span class="tag">app</span><span class="tag">good first issue</span></div>
           <h3 style="margin-top:2.2rem">Finish reading Drobo Dashboard 3.6.1</h3>
-          <p>Its service has been read for status pages, system commands, the event log and volume management. Still undecoded: resizing a volume, the alert-threshold setter and the diagnostics download.</p>
+          <p>Its service has been read for status pages, system commands, the event log and volume management. Still undecoded: the alert-threshold setter and the diagnostics download.</p>
           <div class="tags"><span class="tag">protocol</span><span class="tag">documentation only</span></div>
         </div></div>
         <div class="shell wide reveal"><div class="core">

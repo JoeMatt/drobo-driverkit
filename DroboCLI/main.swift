@@ -37,6 +37,8 @@ all refuse while any Drobo volume is mounted)
                          --name <name> (required), --fs apfs|hfs (default apfs). Refuses a unit that is not blank
   volume delete <unit>   DELETES that volume and everything in it
   reset                  ERASES every drive in the Drobo and its settings, then the Drobo restarts
+                         --volume-size <n>TB: come back with one volume of that size (1, 2, 4, 8, 16, 32, 64 or 128 TB).
+                         This is the only way to change a Drobo's volume size; nothing can be resized in place
                          --serial <serial>: the Drobo's serial number (`drobo get serial`), as confirmation;
                          asked for at the prompt when left out
                          --yes-really: actually send it
@@ -494,6 +496,7 @@ var baySlot: Int?
 var sizeText: String?
 var typedSerial: String?
 var yesReally = false
+var volumeSizeText: String?
 var volumeName: String?
 var fileSystemText = "apfs"
 
@@ -528,6 +531,9 @@ while !arguments.isEmpty {
         guard !arguments.isEmpty else { fail("--serial needs the Drobo's serial number") }
         typedSerial = arguments.removeFirst()
     case "--yes-really": yesReally = true
+    case "--volume-size":
+        guard !arguments.isEmpty else { fail("--volume-size needs a size such as 16TB") }
+        volumeSizeText = arguments.removeFirst()
     case "--name":
         guard !arguments.isEmpty else { fail("--name needs a volume name") }
         volumeName = arguments.removeFirst()
@@ -587,7 +593,7 @@ func runVolume(_ action: DroboVolumeAction, state: State) -> Int32 {
         Thread.sleep(forTimeInterval: 0.5)
         let now = DroboMonitor.snapshot()
         guard now.driverPresent else {
-            if action == .reset {
+            if action.isReset {
                 print("The Drobo has disconnected, which is what a reset does: it is erasing its drives and restarting.")
                 return 0
             }
@@ -609,7 +615,11 @@ func run() -> Int32 {
     let code = state.health.code
     switch command {
     case "reset":
-        return runVolume(.reset, state: state)
+        guard let text = volumeSizeText else { return runVolume(.reset, state: state) }
+        guard let bytes = DroboVolumeAction.parseSize(text, max: 0), bytes % (1 << 40) == 0 else {
+            fail("--volume-size needs a whole number of TB: 1, 2, 4, 8, 16, 32, 64 or 128")
+        }
+        return runVolume(.resetWithVolumeSize(tib: Int(bytes >> 40)), state: state)
     case "volume" where positional.count > 1 && positional[1] == "create":
         let largest = state.snapshot.maxVolumeBytes
         guard let bytes = DroboVolumeAction.parseSize(sizeText ?? "max", max: largest) else {

@@ -37,7 +37,10 @@
 //        0x13  delete a volume, 4 bytes data-out (unique ID, unit number, 0). DESTROYS that
 //              volume's data;
 //        0x02  reset: the Drobo erases its disk pack and settings and restarts. One zero
-//              byte data-out. DESTROYS everything on every drive in the unit.
+//              byte data-out. DESTROYS everything on every drive in the unit;
+//        0x0F  reset with a new volume size (v0.32.0, protocol notes 11.27): 4 bytes
+//              data-out, the size in TiB. When the size differs from the disk pack's the
+//              Drobo erases the pack and restarts. DESTROYS everything, like 0x02.
 //      VolumeCommand refuses all of them unless the caller passes the confirm value and the
 //      Drobo's own serial number, no block I/O is in flight, and (create, delete) the volume
 //      list was read in the last 15 seconds and agrees with the request. The checks are made
@@ -673,7 +676,8 @@ PublishStatus(IOService * service, DroboSCSIController_IVars * iv)
     // 3 adds the LED dim level commands (v0.28.0).
     // 4 adds the event log read (v0.29.0).
     // 6 adds volume management (v0.31.0): selector 3, the volume list under DroboHealth.
-    DictSetNumber(status, "CommandFormat", 6);
+    // 7 adds reset with a new volume size (v0.32.0).
+    DictSetNumber(status, "CommandFormat", 7);
     DictSetNumber(status, "VolumeState", iv->volumeState);
     DictSetNumber(status, "VolumeCommand", iv->volumeCommand);
     DictSetNumber(status, "VolumeStep", iv->volumeLastStep);
@@ -1555,6 +1559,7 @@ enum : uint32_t {
     kDroboVolumeCommandCreate = 1,      // sizeBytes
     kDroboVolumeCommandDelete = 2,      // unit and uniqueID, both as the volume list gives them
     kDroboVolumeCommandReset  = 3,      // erases the whole Drobo
+    kDroboVolumeCommandResize = 4,      // sizeBytes: erases the whole Drobo and makes its volume this size
 };
 // Says the caller went through its own confirmation step. Not a secret: the second factor is
 // the Drobo's serial number, which the person has to type and which is compared here.
@@ -1597,6 +1602,12 @@ VolumePermitted(const DroboSCSIController_IVars * iv, uint32_t command, uint64_t
     }
     if (command == kDroboVolumeCommandReset) {
         return kIOReturnSuccess;
+    }
+    if (command == kDroboVolumeCommandResize) {
+        // A whole number of TiB, within what Drobo's own software offers.
+        const uint64_t tib = sizeBytes >> 40;
+        return (sizeBytes != 0 && (sizeBytes & ((1ull << 40) - 1)) == 0 && tib <= kDroboVolumeSizeMaxTiB)
+               ? kIOReturnSuccess : kIOReturnBadArgument;
     }
     const uint64_t now = mach_absolute_time();
     if (iv->volumesReadTime == 0 || now - iv->volumesReadTime > (uint64_t) kVolumeFreshMS * iv->ticksPerMillisecond) {
@@ -1657,6 +1668,13 @@ PrepareVolumeFinal(DroboSCSIController_IVars * iv)
             DroboDeleteVolumePayload(iv->commandData, (uint16_t) iv->volumeUniqueID, (uint8_t) iv->volumeUnit);
             iv->commandLength = kDroboDeleteVolumeLength;
             break;
+        case kDroboVolumeCommandResize:
+            // Like reset, through Dashboard's session: the counter in byte 4.
+            DroboSystemOperationCDB(iv->commandCDB, kDroboOperationVolumeSize, ++iv->commandSequence,
+                                    (uint16_t) kDroboVolumeSizeLength, false);
+            DroboVolumeSizePayload(iv->commandData, (uint32_t) (iv->volumeSize >> 40));
+            iv->commandLength = kDroboVolumeSizeLength;
+            break;
         default:
             // Reset goes out exactly like blink, standby and restart: the session counter in
             // byte 4 and one zero byte of data.
@@ -1686,7 +1704,7 @@ DroboSCSIController::VolumeCommand(uint32_t command, uint32_t confirm, uint64_t 
     ivars->probeQueue->DispatchSync(^{
         DroboSCSIController_IVars * iv = ivars;
         if (command != kDroboVolumeCommandCreate && command != kDroboVolumeCommandDelete &&
-            command != kDroboVolumeCommandReset) {
+            command != kDroboVolumeCommandReset && command != kDroboVolumeCommandResize) {
             result = kIOReturnUnsupported;
             return;
         }
@@ -1708,7 +1726,7 @@ DroboSCSIController::VolumeCommand(uint32_t command, uint32_t confirm, uint64_t 
             return;
         }
         iv->volumeCommand  = command;
-        iv->volumeSize     = command == kDroboVolumeCommandCreate ? sizeBytes : 0;
+        iv->volumeSize     = (command == kDroboVolumeCommandCreate || command == kDroboVolumeCommandResize) ? sizeBytes : 0;
         iv->volumeUnit     = command == kDroboVolumeCommandDelete ? unit : 0;
         iv->volumeUniqueID = command == kDroboVolumeCommandDelete ? uniqueID : 0;
         iv->volumeState    = 1;

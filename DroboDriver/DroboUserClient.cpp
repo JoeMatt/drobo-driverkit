@@ -23,7 +23,7 @@ struct DroboAppCommandInput
 // Selector 3 input: a volume command (protocol notes 11.26). Must match the host app.
 struct DroboVolumeCommandInput
 {
-    uint32_t command;       // 1 create, 2 delete, 3 reset
+    uint32_t command;       // 1 create, 2 delete, 3 reset, 4 reset with a new volume size
     uint32_t confirm;
     uint64_t sizeBytes;     // create
     uint32_t unit;          // delete

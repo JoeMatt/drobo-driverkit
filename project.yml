@@ -10,8 +10,8 @@ settings:
     # changing it and DEVELOPMENT_TEAM, here or on the xcodebuild command line.
     DROBO_APP_ID: com.joemattiello.DroboDriverKit
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.31.4"
-    CURRENT_PROJECT_VERSION: "38"
+    MARKETING_VERSION: "0.32.0"
+    CURRENT_PROJECT_VERSION: "39"
 targets:
   DroboHost:
     type: application

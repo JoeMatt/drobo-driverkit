@@ -983,6 +983,8 @@ struct VolumeConfirmSheet: View {
 
     @State private var typed = ""
     @State private var sizeText = ""
+    /// For a reset: the volume size to come back with, in TiB; 0 keeps the current one.
+    @State private var resetSize = 0
 
     private var isCreate: Bool {
         if case .create = request.action { return true }
@@ -991,6 +993,9 @@ struct VolumeConfirmSheet: View {
 
     /// The action as it will be sent: for a new volume, with the size from the field.
     private var action: DroboVolumeAction? {
+        if request.action == .reset, resetSize != 0, UInt64(resetSize) << 40 != snapshot.maxVolumeBytes {
+            return .resetWithVolumeSize(tib: resetSize)
+        }
         guard isCreate else { return request.action }
         return DroboVolumeAction.parseSize(sizeText, max: snapshot.maxVolumeBytes).map { .create(bytes: $0) }
     }
@@ -1028,6 +1033,16 @@ struct VolumeConfirmSheet: View {
             }
             if let sizeProblem {
                 Text(sizeProblem).font(Theme.text(12)).foregroundStyle(Theme.amber)
+            }
+            if request.action == .reset, snapshot.commandFormat >= 7 {
+                Picker("Volume size afterwards", selection: $resetSize) {
+                    Text(snapshot.maxVolumeBytes > 0 ? "Keep \(snapshot.maxVolumeBytes >> 40) TB" : "Keep the current size").tag(0)
+                    ForEach(DroboVolumeAction.volumeSizes.filter { UInt64($0) << 40 != snapshot.maxVolumeBytes }, id: \.self) {
+                        Text("\($0) TB").tag($0)
+                    }
+                }
+                Text("The size of the one volume the Drobo makes for itself after the reset. A Drobo volume cannot be resized without erasing it, so this is the only place to change it. Older Macs and some backup tools want 16 TB or less.")
+                    .font(Theme.text(11.5)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if request.action == .reset {
                 Text("Everything on every drive goes, and the Drobo's name and settings return to their defaults. Drives the Drobo had marked as failed are erased too and put back into use; a reset does not repair a faulty drive, so replace it first. The Drobo restarts and comes back with one blank volume.")

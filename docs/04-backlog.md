@@ -7,9 +7,8 @@ Rules for all of it are in [AGENTS.md](../AGENTS.md); current status is in
 
 1. **Finish the Drobo Dashboard 3.6.1 analysis** [protocol]. Its service has been read for the
    page map, system operations, the event log, drive calls, and volume create, delete and
-   reset (protocol notes 11.9, 11.14 to 11.20, 11.26). Still not decoded: resize (operation
-   `0F`), the alert-threshold setter, the diagnostics download, and bit 0 of the create flags
-   byte. Documentation first; nothing destructive goes into the driver without the maintainer
+   reset (protocol notes 11.9, 11.14 to 11.20, 11.26). Still not decoded: the alert-threshold setter, the
+   diagnostics download, and bit 0 of the create flags byte. Documentation first; nothing destructive goes into the driver without the maintainer
    asking for it, as happened for item 18.
 2. **Unit tests for the management page decoders** [app, good first issue]. `DroboMonitor.swift`
    has no tests. Add a test target with fixture bytes per page (protocol notes 11.5 gives real

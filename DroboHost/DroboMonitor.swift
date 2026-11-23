@@ -159,12 +159,27 @@ enum DroboVolumeAction: Equatable {
     case delete(unit: Int)
     /// Erases every drive in the Drobo and its settings; the Drobo then restarts.
     case reset
+    /// The same, and the volume the Drobo makes for itself afterwards is this many TiB. This
+    /// is what Drobo's own software called changing the volume size: there is no way to
+    /// resize a volume and keep what is on it (protocol notes 11.27).
+    case resetWithVolumeSize(tib: Int)
+
+    /// Either kind of reset.
+    var isReset: Bool {
+        switch self {
+        case .reset, .resetWithVolumeSize: return true
+        default: return false
+        }
+    }
+
+    /// The sizes Drobo's own software offered, in TiB.
+    static let volumeSizes = [1, 2, 4, 8, 16, 32, 64, 128]
 
     var label: String {
         switch self {
         case .create: return "Create volume"
         case .delete(let unit): return "Delete volume \(unit)"
-        case .reset: return "Reset"
+        case .reset, .resetWithVolumeSize: return "Reset"
         }
     }
 
@@ -180,6 +195,8 @@ enum DroboVolumeAction: Equatable {
             return "Delete \(what)\(size) and everything stored in it. This cannot be undone."
         case .reset:
             return "Erase every drive in the Drobo, all \(snapshot.volumeRecords?.count ?? snapshot.lunsPresent) volumes and its settings, then restart it. This cannot be undone."
+        case .resetWithVolumeSize(let tib):
+            return "Erase every drive in the Drobo, all \(snapshot.volumeRecords?.count ?? snapshot.lunsPresent) volumes and its settings, then restart it with one new \(tib) TB volume. This cannot be undone."
         }
     }
 
@@ -227,6 +244,7 @@ enum DroboVolumeCommand: UInt32 {
     case create = 1
     case delete = 2
     case reset = 3
+    case resize = 4
 }
 
 /// The driver's own timing for one size class of block request.
@@ -888,7 +906,18 @@ enum DroboMonitor {
             return "Eject the Drobo's volumes first (\(names)). Volumes cannot be changed while any of them is mounted."
         }
         if snapshot.inflight != 0 { return "One of the Drobo's disks is in use. Wait for that to finish and try again." }
-        if action == .reset { return nil }
+        if case .resetWithVolumeSize(let tib) = action {
+            guard snapshot.commandFormat >= 7 else {
+                return "Changing the volume size needs driver 0.32.0 or later. Open the app and press Activate on the Advanced tab first."
+            }
+            guard DroboVolumeAction.volumeSizes.contains(tib) else {
+                return "The volume size must be one of " + DroboVolumeAction.volumeSizes.map { "\($0)" }.joined(separator: ", ") + " TB."
+            }
+            if snapshot.maxVolumeBytes > 0, UInt64(tib) << 40 == snapshot.maxVolumeBytes {
+                return "The Drobo's volume size is already \(tib) TB. Use a plain reset to erase it."
+            }
+        }
+        if action.isReset { return nil }
         guard let records = snapshot.volumeRecords else {
             return snapshot.volumeListFailed
                 ? "This Drobo does not report its list of volumes, so they cannot be changed from here."
@@ -905,7 +934,7 @@ enum DroboMonitor {
             if snapshot.maxVolumeBytes > 0, bytes > snapshot.maxVolumeBytes {
                 return "The largest volume this Drobo allows is \(DroboVolumeAction.size(snapshot.maxVolumeBytes))."
             }
-        case .reset:
+        case .reset, .resetWithVolumeSize:
             break
         }
         return nil
@@ -938,6 +967,9 @@ enum DroboMonitor {
             uniqueID = UInt32(record.uniqueID)
         case .reset:
             break
+        case .resetWithVolumeSize(let tib):
+            command = .resize
+            size = UInt64(tib) << 40
         }
         guard let service = driverService() else { return "The driver is not running." }
         defer { IOObjectRelease(service) }
@@ -983,12 +1015,14 @@ enum DroboMonitor {
                 return (true, "The Drobo deleted the volume on unit \(unit) and its space is free. Restart the Drobo to finish.")
             case .reset:
                 return (true, "The Drobo accepted the reset. It is erasing its drives and restarting, which takes about five minutes. It comes back with one blank volume.")
+            case .resetWithVolumeSize(let tib):
+                return (true, "The Drobo accepted the new volume size. It is erasing its drives and restarting, which takes about five minutes. It comes back with one blank \(tib) TB volume.")
             }
         default:
             let step = snapshot.volumeStep == 1 ? "the first step of creating the volume" : "the command"
             switch snapshot.volumeResult {
             case 0xFFFF_FFFF:
-                return (false, action == .reset
+                return (false, action.isReset
                     ? "The Drobo did not answer the reset within two minutes. It may be restarting: check its lights before trying anything else."
                     : "The Drobo did not answer \(step) within two minutes, so it is not known whether it was carried out. Check the list of volumes before trying again.")
             case 0xFFFF_FFFE:

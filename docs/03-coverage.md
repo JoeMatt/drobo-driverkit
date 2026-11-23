@@ -5,7 +5,7 @@ What the original Drobo software did, and where this project stands. Status valu
 on hardware), **unsupported** (implemented, but the hardware or firmware refuses it on a stock
 unit, so it cannot work for users), **partial**, **no**.
 
-Last updated for v0.31.4 (driver unchanged since v0.31.2).
+Last updated for driver v0.32.0.
 
 ## Against the original kext (`DroboTBT.kext` 1.4)
 
@@ -70,7 +70,7 @@ protocol reference are marked as needing that analysis.
 | Create a volume | system operations `20` then `12` (11.26) | Volumes → New Volume…, `drobo volume create`; spec in [05-volume-management.md](05-volume-management.md) | **verified** on the 8D from the app (v0.31.2): a 2 TiB volume, visible after the Drobo restarted |
 | Format a new volume | host side: allow writes for the unit, then `diskutil eraseDisk` | Volumes → Format… on a unit with nothing on it, `drobo volume format <unit> --name …` (v0.31.3). Refuses a unit that is not blank | **verified** on the 8D from the command: APFS in 5 s, then 256 MB written and read back with matching checksums. The app's sheet is unverified |
 | Delete a volume | system operation `13` (11.26) | Volumes → Delete…, `drobo volume delete <unit>` | **verified** on the 8D from the command (v0.31.1): answered in 4 s. The Drobo keeps presenting the unit until it restarts; the driver hides it from v0.31.2, and that part is unverified |
-| Resize volumes | system operation `0F`, payload not decoded (11.20) | not implemented | no |
+| Change the volume size ("resize") | system operation `0F` (11.27). On this firmware it erases the Drobo and brings it back with one volume of the new size; nothing is resized in place | Reset sheet → Volume size afterwards, `drobo reset --volume-size 16TB` (v0.32.0) | unverified: not yet sent to a Drobo |
 | Format a volume | host side | Disk Utility, once writing is on | n/a |
 | Dim lights / LED brightness | unknown | not implemented | no: needs Dashboard analysis |
 | Email alerts | host side | local notifications only | partial |

@@ -34,6 +34,10 @@ LOCAL RELEASE (no certificate/key export required)
 
    This builds arm64, signs the CLI/privileged helper/driver/app from inside out with secure timestamps and hardened runtime, checks certificate/profile agreement and signed entitlements, notarizes and staples the app, builds the DMG, signs/notarizes/staples the DMG, checks Gatekeeper, and writes a ZIP plus SHA256SUMS.txt. Notarization receipts remain in the output directory. The package command does not publish anything.
 
+RELEASE PAGE (every tag)
+
+Pushing a tag vX.Y.Z runs the "Release page" workflow (.github/workflows/tag-release.yml). It checks that the tag matches MARKETING_VERSION in project.yml, runs the request-byte tests and the unsigned build, and publishes a GitHub release whose notes are docs/releases/X.Y.Z.md followed by the install instructions. If that file does not exist the notes are generated from the commits. It attaches no download: the release is notes plus the source archives GitHub adds. When the notarized DMG exists (below), add it to that release.
+
 GITHUB ACTIONS (optional)
 
 A manual Release workflow is included and disabled by default. It expects these repository secrets:

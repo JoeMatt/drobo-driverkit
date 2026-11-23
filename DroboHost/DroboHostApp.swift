@@ -419,7 +419,7 @@ final class DashboardModel: ObservableObject {
                 message = "\(action.label): \(outcome.text)"
                 awaitingVolume = nil
             } else if !latest.driverPresent {
-                message = action == .reset ? "Reset: the Drobo has disconnected. It is erasing its drives and restarting, which takes about five minutes."
+                message = action.isReset ? "Reset: the Drobo has disconnected. It is erasing its drives and restarting, which takes about five minutes."
                                            : "\(action.label): the Drobo disconnected before answering."
                 awaitingVolume = nil
             }
