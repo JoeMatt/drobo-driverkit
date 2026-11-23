@@ -22,6 +22,11 @@ on:
         required: true
         type: boolean
         default: false
+      attach_to_release:
+        description: Add the DMG, ZIP and checksums to the published release for this version (only after the clean-Mac install check)
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -139,15 +144,28 @@ jobs:
             build/release/SHA256SUMS.txt
             build/release/*-notarization.json
           if-no-files-found: error
-      - name: Create draft release
+      # The "Release page" workflow has usually published notes for this tag already. The signed
+      # files are added to that release only when asked to; otherwise they stay as this run's
+      # artifacts, to be installed on a clean Mac first. With no release yet, a draft is made.
+      - name: Publish the signed files
         if: ${{ !inputs.credentials_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
+          ATTACH: ${{ inputs.attach_to_release }}
         run: |
-          gh release create "v$RELEASE_VERSION" \
-            build/release/DroboDriverKit-*.dmg build/release/DroboDriverKit-*.zip build/release/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --draft --title "DroboDriverKit $RELEASE_VERSION" --notes-file packaging/notes.txt
+          set -euo pipefail
+          files=(build/release/DroboDriverKit-*.dmg build/release/DroboDriverKit-*.zip build/release/SHA256SUMS.txt)
+          if gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            if [ "$ATTACH" = true ]; then
+              gh release upload "v$RELEASE_VERSION" "${files[@]}" --clobber
+            else
+              echo "Release v$RELEASE_VERSION exists; the signed files are in this run's artifacts. Run again with attach_to_release after the clean-Mac check."
+            fi
+          else
+            gh release create "v$RELEASE_VERSION" "${files[@]}" \
+              --target "$GITHUB_SHA" --draft --title "DroboDriverKit $RELEASE_VERSION" --notes-file packaging/notes.txt
+          fi
       - name: Remove temporary credentials
         if: always()
         run: |

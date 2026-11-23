@@ -36,7 +36,7 @@ LOCAL RELEASE (no certificate/key export required)
 
 RELEASE PAGE (every tag)
 
-Pushing a tag vX.Y.Z runs the "Release page" workflow (.github/workflows/tag-release.yml). It checks that the tag matches MARKETING_VERSION in project.yml, runs the request-byte tests and the unsigned build, and publishes a GitHub release whose notes are docs/releases/X.Y.Z.md followed by the install instructions. If that file does not exist the notes are generated from the commits. It attaches no download: the release is notes plus the source archives GitHub adds. When the notarized DMG exists (below), add it to that release.
+Pushing a tag vX.Y.Z runs the "Release page" workflow (.github/workflows/tag-release.yml). It checks that the tag matches MARKETING_VERSION in project.yml, runs the request-byte tests and the unsigned build, and publishes a GitHub release whose notes are docs/releases/X.Y.Z.md followed by the install instructions. If that file does not exist the notes are generated from the commits. It attaches no download: the release is notes plus the source archives GitHub adds. The manual Release workflow below builds the notarized DMG. Run it first with attach_to_release off: the files stay as that run's artifacts, to be installed on a clean Mac. Run it again with attach_to_release on to add them to the published release.
 
 GITHUB ACTIONS (optional)
 
