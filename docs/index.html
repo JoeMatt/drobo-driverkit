@@ -132,6 +132,7 @@
   .bento > * { grid-column: span 4; }
   .bento .wide { grid-column: span 8; }
   .bento .half { grid-column: span 6; }
+  .bento .full { grid-column: span 12; }
   .state { display: inline-flex; align-items: center; gap: .5rem; font-family: var(--mono); font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
   .state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
   .ok { color: var(--emerald); } .warn { color: var(--amber); } .no { color: var(--coral); } .info { color: var(--ice); }
@@ -262,19 +263,19 @@
         <div class="shell reveal"><div class="core">
           <span class="state warn"><i></i>Experimental</span>
           <h3>Writing</h3>
-          <p>Off by default. You enable it per volume in the app. It is implemented but not yet verified on hardware, so keep a copy of anything on a volume you make writable.</p>
+          <p>Off by default. You enable it per volume in the app. On an 8D a new volume has been formatted, written to and read back with matching checksums. It is still new, so keep a copy of anything on a volume you make writable.</p>
         </div></div>
         <div class="shell reveal" style="--d:.08s"><div class="core">
           <span class="state warn"><i></i>Unverified</span>
           <h3>Management tools</h3>
-          <p>Blink lights, restart, safe shutdown, rename, dual disk redundancy and spin-down settings are in the app. They use the commands Drobo's own software sends and are not yet verified on hardware.</p>
+          <p>Blink lights, restart, safe shutdown, rename, dual disk redundancy and spin-down settings are in the app. They use the commands Drobo's own software sends. Blink is verified on hardware; the others are not yet.</p>
         </div></div>
         <div class="shell reveal" style="--d:.16s"><div class="core">
           <span class="state no"><i></i>Not supported</span>
           <h3>Out of scope</h3>
           <p>Firmware updates. Resizing a volume in place does not exist on a Drobo: its own software erased the unit to change the size, and so does the option on Reset here. Intel Macs should keep using Drobo's original driver. Other Thunderbolt models are untested.</p>
         </div></div>
-        <div class="shell wide reveal"><div class="core">
+        <div class="shell full reveal"><div class="core">
           <span class="state ok"><i></i>New in 0.32 · verified on an 8D</span>
           <h3>Create and delete volumes, reset the Drobo</h3>
           <p class="pull">Drobo Dashboard no longer runs on a current Mac, so until now there was no way to wipe an 8D and start again. There is now, in the app and as <span class="mono">drobo volume create</span>, <span class="mono">drobo volume delete</span> and <span class="mono">drobo reset</span>.</p>
